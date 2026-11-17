@@ -1,15 +1,15 @@
 # AI Knowledge Assistant
 
-This Streamlit app uses OpenAI's reasoning model for detailed answers and retrieves relevant passages from uploaded PDF, TXT, CSV, and Markdown files.
+This Streamlit app uses a free reasoning model through OpenRouter for detailed answers and retrieves relevant passages locally from uploaded PDF, TXT, CSV, and Markdown files.
 
 ## Configure the API key
 
-In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add:
+Create an [OpenRouter API key](https://openrouter.ai/keys). In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add:
 
 ```toml
-OPENAI_API_KEY = "your-api-key"
+OPENROUTER_API_KEY = "your-api-key"
 ```
 
-Never commit the key or paste it into chat. API usage may incur charges to the app owner's OpenAI account. Because this app is public, visitors can use that account's quota. Uploaded text and questions are sent to OpenAI; avoid submitting sensitive documents.
+Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions and relevant document passages are sent to OpenRouter; avoid submitting sensitive documents.
 
 Uploads and conversation history are kept in each active app session and are not written to shared disk.

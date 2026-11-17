@@ -1,6 +1,9 @@
 import hashlib
 import io
+import math
 import os
+import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -9,15 +12,15 @@ from openai import OpenAI, OpenAIError
 from PyPDF2 import PdfReader
 from PyPDF2.errors import PdfReadError
 
-MODEL = "gpt-6.1-sol"
-EMBEDDING_MODEL = "text-embedding-3-small"
+MODEL = "inclusionai/ling-3.2-flash:free"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 MAX_FILES = 10
 MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_DOCUMENT_CHARS = 80_000
 MAX_TOTAL_CHARS = 250_000
 CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
-EMBEDDING_BATCH_SIZE = 64
 RETRIEVAL_COUNT = 6
 HISTORY_MESSAGE_COUNT = 8
 
@@ -37,16 +40,15 @@ class UploadedDocument(Protocol):
 class DocumentChunk:
     source: str
     text: str
-    embedding: tuple[float, ...]
 
 
 def get_api_key() -> str | None:
-    environment_key = os.getenv("OPENAI_API_KEY")
+    environment_key = os.getenv("OPENROUTER_API_KEY")
     if environment_key:
         return environment_key
 
     try:
-        return st.secrets["OPENAI_API_KEY"]
+        return st.secrets["OPENROUTER_API_KEY"]
     except (KeyError, FileNotFoundError):
         return None
 
@@ -121,7 +123,6 @@ def fingerprint_files(uploaded_files: list[UploadedDocument]) -> str:
 
 
 def build_index(
-    client: OpenAI,
     uploaded_files: list[UploadedDocument],
 ) -> list[DocumentChunk]:
     fingerprint = fingerprint_files(uploaded_files)
@@ -132,54 +133,66 @@ def build_index(
     for warning in warnings:
         st.sidebar.warning(warning)
 
-    indexed_chunks: list[DocumentChunk] = []
-    for start in range(0, len(raw_chunks), EMBEDDING_BATCH_SIZE):
-        batch = raw_chunks[start : start + EMBEDDING_BATCH_SIZE]
-        response = client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=[text for _, text in batch],
-        )
-        embeddings = sorted(response.data, key=lambda item: item.index)
-        if len(embeddings) != len(batch):
-            raise RuntimeError("The embedding service returned an incomplete document index.")
-
-        indexed_chunks.extend(
-            DocumentChunk(source=source, text=text, embedding=tuple(item.embedding))
-            for (source, text), item in zip(batch, embeddings)
-        )
+    indexed_chunks = [
+        DocumentChunk(source=source, text=text) for source, text in raw_chunks
+    ]
 
     st.session_state["document_fingerprint"] = fingerprint
     st.session_state["document_index"] = indexed_chunks
     return indexed_chunks
 
 
-def cosine_similarity(left: tuple[float, ...], right: list[float]) -> float:
-    dot_product = sum(a * b for a, b in zip(left, right))
-    left_norm = sum(value * value for value in left) ** 0.5
-    right_norm = sum(value * value for value in right) ** 0.5
-    if not left_norm or not right_norm:
-        return 0.0
-    return dot_product / (left_norm * right_norm)
-
-
 def retrieve_chunks(
-    client: OpenAI,
     question: str,
     chunks: list[DocumentChunk],
 ) -> list[DocumentChunk]:
     if not chunks:
         return []
 
-    response = client.embeddings.create(model=EMBEDDING_MODEL, input=question)
-    if not response.data:
-        raise RuntimeError("The embedding service returned no query embedding.")
-    question_embedding = response.data[0].embedding
-    ranked_chunks = sorted(
-        chunks,
-        key=lambda chunk: cosine_similarity(chunk.embedding, question_embedding),
-        reverse=True,
+    query_terms = set(TOKEN_PATTERN.findall(question.lower()))
+    if not query_terms:
+        return []
+
+    term_frequencies = [
+        Counter(TOKEN_PATTERN.findall(chunk.text.lower())) for chunk in chunks
+    ]
+    document_frequencies: Counter[str] = Counter()
+    for frequencies in term_frequencies:
+        document_frequencies.update(frequencies.keys())
+
+    document_count = len(chunks)
+    average_length = (
+        sum(sum(frequencies.values()) for frequencies in term_frequencies)
+        / document_count
     )
-    return ranked_chunks[:RETRIEVAL_COUNT]
+    ranked_chunks: list[tuple[float, DocumentChunk]] = []
+
+    for chunk, frequencies in zip(chunks, term_frequencies):
+        document_length = sum(frequencies.values())
+        score = 0.0
+        for term in query_terms:
+            frequency = frequencies.get(term, 0)
+            if not frequency:
+                continue
+            inverse_document_frequency = math.log(
+                1
+                + (document_count - document_frequencies[term] + 0.5)
+                / (document_frequencies[term] + 0.5)
+            )
+            length_normalization = 1.5 * (
+                1 - 0.75 + 0.75 * document_length / max(average_length, 1)
+            )
+            score += (
+                inverse_document_frequency
+                * frequency
+                * 2.5
+                / (frequency + length_normalization)
+            )
+        if score > 0:
+            ranked_chunks.append((score, chunk))
+
+    ranked_chunks.sort(key=lambda item: item[0], reverse=True)
+    return [chunk for _, chunk in ranked_chunks[:RETRIEVAL_COUNT]]
 
 
 def answer_question(
@@ -201,7 +214,6 @@ def answer_question(
     ]
     response = client.responses.create(
         model=MODEL,
-        reasoning={"effort": "high"},
         instructions=SYSTEM_INSTRUCTIONS,
         input=[
             *api_history,
@@ -237,17 +249,20 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         st.sidebar.text(f"• {uploaded_file.name}")
 else:
-    st.sidebar.info("You can ask general questions or upload documents for document-grounded answers.")
+    st.sidebar.info(
+        "You can ask general questions or upload documents for document-grounded answers."
+    )
 
 st.sidebar.info(
-    "Questions and document text are sent to OpenAI to generate answers. "
-    "Public visitors use the app owner's OpenAI API quota; avoid uploading sensitive documents."
+    "Questions and relevant document passages are sent to OpenRouter. "
+    "This app uses a free model, but free-tier limits and availability can vary. "
+    "Avoid uploading sensitive documents."
 )
 
 api_key = get_api_key()
 if not api_key:
     st.sidebar.warning(
-        "Add OPENAI_API_KEY in Streamlit app settings → Secrets to enable AI answers."
+        "Add OPENROUTER_API_KEY in Streamlit app settings → Secrets to enable AI answers."
     )
 
 if "chat_history" not in st.session_state:
@@ -270,14 +285,25 @@ if question:
     st.session_state["chat_history"].append({"role": "user", "content": question})
 
     if not api_key:
-        st.error("AI answers are unavailable until OPENAI_API_KEY is configured in Streamlit Secrets.")
+        st.error(
+            "AI answers are unavailable until OPENROUTER_API_KEY is configured in Streamlit Secrets."
+        )
     else:
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(
+            api_key=api_key,
+            base_url=OPENROUTER_BASE_URL,
+            default_headers={
+                "HTTP-Referer": "https://cssd-knowledge-assistant.streamlit.app/",
+                "X-Title": "AI Knowledge Assistant",
+            },
+        )
         try:
-            with st.spinner("Reading relevant passages and reasoning through your question..."):
-                chunks = build_index(client, uploaded_files) if uploaded_files else []
-                relevant_chunks = retrieve_chunks(client, question, chunks)
-                answer = answer_question(client, question, previous_history, relevant_chunks)
+            with st.spinner("Finding relevant passages and preparing your answer..."):
+                chunks = build_index(uploaded_files) if uploaded_files else []
+                relevant_chunks = retrieve_chunks(question, chunks)
+                answer = answer_question(
+                    client, question, previous_history, relevant_chunks
+                )
 
             if not answer:
                 st.error("The AI returned an empty answer. Please try again.")
@@ -292,5 +318,5 @@ if question:
                 st.session_state["chat_history"].append(
                     {"role": "assistant", "content": answer, "sources": sources}
                 )
-        except (OpenAIError, RuntimeError) as error:
-            st.error(f"OpenAI request failed: {error}")
+        except OpenAIError as error:
+            st.error(f"OpenRouter request failed: {error}")
