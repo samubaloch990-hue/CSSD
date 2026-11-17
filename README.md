@@ -1,6 +1,6 @@
 # AI Knowledge Assistant
 
-This Streamlit app uses OpenRouter for answers and retrieves relevant passages locally from uploaded PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex and document-based questions retain deeper reasoning.
+This Streamlit app uses OpenRouter for answers and retrieves relevant passages from session uploads and saved shared documents. It supports PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex and document-based questions retain deeper reasoning.
 
 ## Configure the API key
 
@@ -12,13 +12,17 @@ OPENROUTER_API_KEY = "your-api-key"
 
 Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions and relevant document passages are sent to OpenRouter; avoid submitting sensitive documents.
 
-Uploads and conversation history are kept in each active app session and are not written to shared disk.
+Session uploads and conversation history are kept only for the active app session. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
+
+## Shared document library
+
+Use **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. The library supports up to 10 documents, 5 MB per upload, 80,000 characters per document, and 250,000 characters total.
 
 ## Shared correction memory
 
 The app can remember corrected facts for all users without saving full chat transcripts. Each topic has one saved correction; a new correction for the same topic replaces the previous one. The PIN authorizes a change but does not verify that the fact itself is true.
 
-1. Create a Supabase project and run this in its SQL Editor:
+1. Create a Supabase project and run this in its SQL Editor. This creates the tables for both the shared document library and correction memory:
 
    ```sql
    create table if not exists public.assistant_memory (
@@ -28,9 +32,20 @@ The app can remember corrected facts for all users without saving full chat tran
        updated_at timestamptz not null default now()
    );
 
+   create table if not exists public.assistant_documents (
+       document_id text primary key,
+       file_name text not null unique,
+       content text not null,
+       updated_at timestamptz not null default now()
+   );
+
    alter table public.assistant_memory enable row level security;
-   revoke all on table public.assistant_memory from anon, authenticated;
-   grant all on table public.assistant_memory to service_role;
+   alter table public.assistant_documents enable row level security;
+
+   revoke all on table public.assistant_memory, public.assistant_documents
+       from anon, authenticated;
+   grant all on table public.assistant_memory, public.assistant_documents
+       to service_role;
    ```
 
 2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add the Supabase project URL, private service-role key, and a private passphrase of at least 6 characters (shorter passphrases are easier to guess):
@@ -43,4 +58,4 @@ The app can remember corrected facts for all users without saving full chat tran
 
    Keep these values private. Do not commit them to GitHub or paste them into chat.
 
-3. In the app sidebar, use **Correct shared knowledge** to submit a topic and its corrected fact. A wrong PIN makes no database change. Only trusted people should know the PIN because approved corrections are shared with all app users.
+3. In the app sidebar, use **Manage shared documents** to add documents once. Use **Correct shared knowledge** to submit a topic and its corrected fact. A wrong PIN makes no database change. Only trusted people should know the PIN because saved documents and approved corrections are shared with all app users.

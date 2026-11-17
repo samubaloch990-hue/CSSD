@@ -26,6 +26,8 @@ CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
 RETRIEVAL_COUNT = 6
 HISTORY_MESSAGE_COUNT = 8
+MAX_SHARED_DOCUMENTS = 10
+MAX_FILENAME_CHARS = 255
 MAX_TOPIC_CHARS = 100
 MAX_CORRECTION_CHARS = 1000
 MAX_SHARED_MEMORY_ITEMS = 40
@@ -176,6 +178,97 @@ def save_shared_correction(
     response.raise_for_status()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def load_shared_documents(
+    supabase_url: str,
+    _service_role_key: str,
+) -> list[dict[str, str]]:
+    response = requests.get(
+        f"{supabase_url}/rest/v1/assistant_documents",
+        params={
+            "select": "document_id,file_name,content,updated_at",
+            "order": "file_name.asc",
+            "limit": str(MAX_SHARED_DOCUMENTS + 1),
+        },
+        headers=supabase_headers(_service_role_key),
+        timeout=5,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list):
+        raise ValueError("The shared documents database returned an invalid response.")
+    if len(rows) > MAX_SHARED_DOCUMENTS:
+        raise ValueError(
+            f"The shared library contains more than {MAX_SHARED_DOCUMENTS} documents."
+        )
+
+    documents: list[dict[str, str]] = []
+    total_chars = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("The shared documents database returned an invalid entry.")
+        document_id = row.get("document_id")
+        file_name = row.get("file_name")
+        content = row.get("content")
+        if (
+            not isinstance(document_id, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", document_id)
+            or not isinstance(file_name, str)
+            or not file_name
+            or len(file_name) > MAX_FILENAME_CHARS
+            or not isinstance(content, str)
+            or not content.strip()
+        ):
+            raise ValueError("A shared document entry is invalid.")
+        if document_id != shared_document_id(file_name):
+            raise ValueError("A shared document entry has an invalid identifier.")
+        total_chars += len(content)
+        if len(content) > MAX_DOCUMENT_CHARS or total_chars > MAX_TOTAL_CHARS:
+            raise ValueError("The shared document library exceeds its size limits.")
+        documents.append(
+            {
+                "document_id": document_id,
+                "file_name": file_name,
+                "content": content,
+            }
+        )
+    return documents
+
+
+def shared_document_id(file_name: str) -> str:
+    return hashlib.sha256(file_name.casefold().encode("utf-8")).hexdigest()
+
+
+def save_shared_documents(
+    config: SupabaseConfig,
+    documents: list[dict[str, str]],
+) -> None:
+    response = requests.post(
+        f"{config.url}/rest/v1/assistant_documents",
+        params={"on_conflict": "document_id"},
+        headers={
+            **supabase_headers(config.service_role_key),
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        },
+        json=documents,
+        timeout=10,
+    )
+    response.raise_for_status()
+
+
+def delete_shared_document(config: SupabaseConfig, document_id: str) -> None:
+    if not re.fullmatch(r"[a-f0-9]{64}", document_id):
+        raise ValueError("The selected shared document has an invalid identifier.")
+    response = requests.delete(
+        f"{config.url}/rest/v1/assistant_documents",
+        params={"document_id": f"eq.{document_id}"},
+        headers=supabase_headers(config.service_role_key),
+        timeout=5,
+    )
+    response.raise_for_status()
+
+
 def extract_text(uploaded_file: UploadedDocument) -> str:
     content = uploaded_file.getvalue()
     if uploaded_file.name.lower().endswith(".pdf"):
@@ -191,6 +284,90 @@ def split_into_chunks(text: str, source: str) -> list[tuple[str, str]]:
         (source, " ".join(words[start : start + CHUNK_WORDS]))
         for start in range(0, len(words), step)
     ]
+
+
+def prepare_shared_documents(
+    uploaded_files: list[UploadedDocument],
+    current_documents: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if not uploaded_files:
+        raise ValueError("Choose at least one file to add.")
+    if len(uploaded_files) > MAX_FILES:
+        raise ValueError(f"Upload no more than {MAX_FILES} files at a time.")
+
+    current_by_id = {
+        document["document_id"]: document for document in current_documents
+    }
+    replacements: list[dict[str, str]] = []
+    replacement_ids: set[str] = set()
+
+    for uploaded_file in uploaded_files:
+        if uploaded_file.size > MAX_FILE_BYTES:
+            raise ValueError(
+                f"{uploaded_file.name} exceeds the 5 MB per-file limit."
+            )
+        file_name = re.split(r"[\\/]", uploaded_file.name)[-1].strip()
+        if not file_name or len(file_name) > MAX_FILENAME_CHARS:
+            raise ValueError(
+                f"File names must contain 1 to {MAX_FILENAME_CHARS} characters."
+            )
+        document_id = shared_document_id(file_name)
+        if document_id in replacement_ids:
+            raise ValueError("The upload contains duplicate file names.")
+        replacement_ids.add(document_id)
+
+        try:
+            content = extract_text(uploaded_file).strip()
+        except PdfReadError as error:
+            raise ValueError(f"{file_name} could not be read as a PDF.") from error
+        if not content:
+            raise ValueError(f"No extractable text was found in {file_name}.")
+        if len(content) > MAX_DOCUMENT_CHARS:
+            raise ValueError(
+                f"{file_name} exceeds the {MAX_DOCUMENT_CHARS:,}-character "
+                "per-document limit."
+            )
+        replacements.append(
+            {
+                "document_id": document_id,
+                "file_name": file_name,
+                "content": content,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    merged_documents = current_by_id.copy()
+    merged_documents.update(
+        {document["document_id"]: document for document in replacements}
+    )
+    if len(merged_documents) > MAX_SHARED_DOCUMENTS:
+        raise ValueError(
+            f"The shared library can contain no more than "
+            f"{MAX_SHARED_DOCUMENTS} documents."
+        )
+    if (
+        sum(len(document["content"]) for document in merged_documents.values())
+        > MAX_TOTAL_CHARS
+    ):
+        raise ValueError(
+            f"The shared library can contain no more than "
+            f"{MAX_TOTAL_CHARS:,} characters in total."
+        )
+    return replacements
+
+
+def shared_document_chunks(
+    documents: list[dict[str, str]],
+) -> list[DocumentChunk]:
+    chunks: list[DocumentChunk] = []
+    for document in documents:
+        chunks.extend(
+            DocumentChunk(source=f"Shared: {source}", text=text)
+            for source, text in split_into_chunks(
+                document["content"], document["file_name"]
+            )
+        )
+    return chunks
 
 
 def document_chunks(
@@ -388,7 +565,7 @@ st.markdown(
 
 st.sidebar.header("📁 Knowledge Base Setup")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload reference documents (PDF, TXT, CSV, MD)",
+    "Upload for this session only (PDF, TXT, CSV, MD)",
     accept_multiple_files=True,
     type=["pdf", "txt", "csv", "md"],
 )
@@ -405,26 +582,178 @@ else:
 
 st.sidebar.info(
     "Questions and relevant document passages are sent to OpenRouter. "
-    "This app uses a free model, but free-tier limits and availability can vary. "
-    "Avoid uploading sensitive documents."
+    "Saved shared documents can be used by everyone. This app uses a free model, "
+    "but free-tier limits and availability can vary. Avoid uploading sensitive documents."
 )
 
 supabase_config = get_supabase_config()
 edit_pin = read_secret("MEMORY_EDIT_PIN")
+shared_documents: list[dict[str, str]] = []
+shared_documents_error: str | None = None
+if supabase_config is not None:
+    try:
+        shared_documents = load_shared_documents(
+            supabase_config.url,
+            supabase_config.service_role_key,
+        )
+    except requests.RequestException as error:
+        status_code = (
+            error.response.status_code
+            if error.response is not None
+            else "unavailable"
+        )
+        shared_documents_error = (
+            f"Supabase response: {status_code}. Check that the "
+            "assistant_documents table has been created."
+        )
+    except ValueError as error:
+        shared_documents_error = str(error)
+
 if supabase_config is None:
     st.sidebar.warning(
-        "Shared correction memory is not configured. Add SUPABASE_URL and "
-        "SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
+        "Shared corrections and saved documents are not configured. Add "
+        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
     )
 else:
     st.sidebar.info(
         "Approved corrections are shared with everyone. Only people with the "
         "verification PIN can add or replace a topic."
     )
+    if shared_documents_error:
+        st.sidebar.warning(
+            f"Saved shared documents are unavailable: {shared_documents_error}"
+        )
+    elif shared_documents:
+        st.sidebar.success(
+            f"{len(shared_documents)} saved document(s) are available to everyone."
+        )
+    else:
+        st.sidebar.info(
+            "No shared documents are saved yet. Add them once to make them "
+            "available in future conversations."
+        )
+
+    with st.sidebar.expander("📚 Manage shared documents"):
+        st.caption(
+            "Everyone can ask questions about saved documents. Only people with "
+            "the verification PIN can add, replace, or remove them."
+        )
+        if shared_documents_error:
+            st.error(
+                "Create the assistant_documents table using the SQL in the README "
+                "before managing saved documents."
+            )
+        elif not edit_pin or len(edit_pin) < MIN_PIN_LENGTH:
+            st.info(
+                f"Set MEMORY_EDIT_PIN to a private passcode of at least "
+                f"{MIN_PIN_LENGTH} characters to manage shared documents."
+            )
+        else:
+            if shared_documents:
+                st.write("Saved documents:")
+                for document in shared_documents:
+                    st.text(f"• {document['file_name']}")
+
+            with st.form("shared_documents_upload_form"):
+                new_shared_files = st.file_uploader(
+                    "Add or replace shared documents (PDF, TXT, CSV, MD)",
+                    accept_multiple_files=True,
+                    type=["pdf", "txt", "csv", "md"],
+                    key="shared_documents_uploader",
+                )
+                upload_pin = st.text_input(
+                    "Verification PIN",
+                    type="password",
+                    key="shared_documents_upload_pin",
+                )
+                upload_submitted = st.form_submit_button("Save for everyone")
+
+            if upload_submitted:
+                if not hmac.compare_digest(
+                    upload_pin.encode("utf-8"),
+                    edit_pin.encode("utf-8"),
+                ):
+                    st.error("PIN is incorrect. No shared documents were changed.")
+                else:
+                    try:
+                        documents_to_save = prepare_shared_documents(
+                            new_shared_files or [],
+                            shared_documents,
+                        )
+                        save_shared_documents(supabase_config, documents_to_save)
+                    except ValueError as error:
+                        st.error(str(error))
+                    except requests.RequestException as error:
+                        status_code = (
+                            error.response.status_code
+                            if error.response is not None
+                            else "unavailable"
+                        )
+                        st.error(
+                            "Could not save shared documents "
+                            f"(database response: {status_code}). Nothing was changed."
+                        )
+                    else:
+                        load_shared_documents.clear()
+                        st.success(
+                            "Shared documents were saved. Re-uploading a file with "
+                            "the same name replaces its saved version."
+                        )
+                        st.rerun()
+
+            if shared_documents:
+                with st.form("shared_document_delete_form"):
+                    selected_document_id = st.selectbox(
+                        "Remove a saved document",
+                        options=[
+                            document["document_id"] for document in shared_documents
+                        ],
+                        format_func=lambda document_id: next(
+                            document["file_name"]
+                            for document in shared_documents
+                            if document["document_id"] == document_id
+                        ),
+                    )
+                    delete_pin = st.text_input(
+                        "Verification PIN",
+                        type="password",
+                        key="shared_document_delete_pin",
+                    )
+                    delete_submitted = st.form_submit_button("Remove document")
+
+                if delete_submitted:
+                    if not hmac.compare_digest(
+                        delete_pin.encode("utf-8"),
+                        edit_pin.encode("utf-8"),
+                    ):
+                        st.error("PIN is incorrect. No shared document was removed.")
+                    else:
+                        try:
+                            delete_shared_document(
+                                supabase_config,
+                                selected_document_id,
+                            )
+                        except ValueError as error:
+                            st.error(str(error))
+                        except requests.RequestException as error:
+                            status_code = (
+                                error.response.status_code
+                                if error.response is not None
+                                else "unavailable"
+                            )
+                            st.error(
+                                "Could not remove the shared document "
+                                f"(database response: {status_code})."
+                            )
+                        else:
+                            load_shared_documents.clear()
+                            st.success("The shared document was removed.")
+                            st.rerun()
+
     if not edit_pin or len(edit_pin) < MIN_PIN_LENGTH:
         st.sidebar.warning(
             f"Set MEMORY_EDIT_PIN in Streamlit Secrets to a private passcode of at "
-            f"least {MIN_PIN_LENGTH} characters to enable corrections."
+            f"least {MIN_PIN_LENGTH} characters to enable shared edits."
         )
     else:
         with st.sidebar.expander("🧠 Correct shared knowledge"):
@@ -525,6 +854,7 @@ if question:
         try:
             with st.spinner("Finding relevant passages and preparing your answer..."):
                 chunks = build_index(uploaded_files) if uploaded_files else []
+                chunks.extend(shared_document_chunks(shared_documents))
                 relevant_chunks = retrieve_chunks(question, chunks)
                 quick_response = use_quick_response(question, relevant_chunks)
                 shared_corrections = (
@@ -537,8 +867,13 @@ if question:
                 )
                 if supabase_config is None:
                     st.warning(
-                        "Shared corrections are unavailable until the database is "
-                        "configured; this answer will not include saved corrections."
+                        "Shared corrections and saved documents are unavailable "
+                        "until Supabase is configured."
+                    )
+                elif shared_documents_error:
+                    st.warning(
+                        "Saved shared documents could not be loaded. This answer "
+                        "will use only available session uploads and corrections."
                     )
                 answer = answer_question(
                     client,
@@ -571,7 +906,7 @@ if question:
                 else "unavailable"
             )
             st.error(
-                "Could not load shared corrections "
+                "Could not load shared data from Supabase "
                 f"(database response: {status_code}). No answer was sent."
             )
         except ValueError as error:
