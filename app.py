@@ -29,7 +29,7 @@ HISTORY_MESSAGE_COUNT = 8
 MAX_TOPIC_CHARS = 100
 MAX_CORRECTION_CHARS = 1000
 MAX_SHARED_MEMORY_ITEMS = 40
-MIN_PIN_LENGTH = 12
+MIN_PIN_LENGTH = 6
 GREETING_PATTERN = re.compile(
     r"^(?:hi|hello|hey|good morning|good afternoon|good evening)[!.?,\s]*$",
     re.IGNORECASE,
