@@ -20,8 +20,8 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 MAX_FILES = 10
 MAX_FILE_BYTES = 100 * 1024 * 1024
-MAX_DOCUMENT_CHARS = 80_000
-MAX_TOTAL_CHARS = 250_000
+MAX_DOCUMENT_CHARS = 1_000_000
+MAX_TOTAL_CHARS = 1_000_000
 CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
 RETRIEVAL_COUNT = 6
@@ -397,15 +397,24 @@ def document_chunks(
 
         if len(text) > MAX_DOCUMENT_CHARS:
             text = text[:MAX_DOCUMENT_CHARS]
-            warnings.append(f"{uploaded_file.name} was limited to the first 80,000 characters.")
+            warnings.append(
+                f"{uploaded_file.name} was limited to the first "
+                f"{MAX_DOCUMENT_CHARS:,} characters."
+            )
 
         remaining_chars = MAX_TOTAL_CHARS - total_chars
         if remaining_chars <= 0:
-            warnings.append("The 250,000-character total limit was reached; remaining files were skipped.")
+            warnings.append(
+                f"The {MAX_TOTAL_CHARS:,}-character total limit was reached; "
+                "remaining files were skipped."
+            )
             break
         if len(text) > remaining_chars:
             text = text[:remaining_chars]
-            warnings.append("The uploaded text was limited to 250,000 characters in total.")
+            warnings.append(
+                f"The uploaded text was limited to {MAX_TOTAL_CHARS:,} "
+                "characters in total."
+            )
 
         total_chars += len(text)
         chunks.extend(split_into_chunks(text, uploaded_file.name))
