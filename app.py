@@ -1040,11 +1040,33 @@ st.markdown(
         background: rgba(255, 255, 255, 0.92);
         box-shadow: 0 5px 18px rgba(15, 23, 42, 0.035);
     }
+    [data-testid="stChatMessage"]:has(
+        [data-testid="stChatMessageContent"][aria-label="Chat message from user"]
+    ) {
+        border: 1px solid #c9d8f1;
+        border-left: 4px solid #5b7fbd;
+        background: #eef4ff;
+    }
+    [data-testid="stChatMessage"]:has(
+        [data-testid="stChatMessageContent"][aria-label="Chat message from assistant"]
+    ) {
+        border: 1px solid #c9e0d4;
+        border-left: 4px solid #4f8d72;
+        background: #eff7f3;
+    }
     [data-testid="stChatInput"] {
-        border-color: #d9e2ef;
+        border: 1px solid #cbd8e9;
         border-radius: 16px;
-        background: #ffffff;
+        background: #f0f5fc;
         box-shadow: 0 8px 26px rgba(15, 23, 42, 0.07);
+    }
+    [data-testid="stChatInput"] textarea {
+        background: transparent;
+        color: #1e293b;
+    }
+    [data-testid="stChatInput"] textarea::placeholder {
+        color: #718198;
+        opacity: 1;
     }
     [data-testid="stChatInput"]:focus-within {
         border-color: #4f7df3;
@@ -1429,19 +1451,19 @@ if "chat_history" not in st.session_state:
 
 sources_label = "المصادر" if response_language == "Arabic" else "Sources"
 for message in st.session_state["chat_history"]:
-    with assistant_tab.chat_message(message["role"]):
-        assistant_tab.markdown(message["content"])
-        if message.get("sources"):
-            with assistant_tab.expander(sources_label):
-                for source in message.get("sources", []):
-                    assistant_tab.markdown(f"- `{source}`")
+    chat_message = assistant_tab.chat_message(message["role"])
+    chat_message.markdown(message["content"])
+    if message.get("sources"):
+        sources_expander = chat_message.expander(sources_label)
+        for source in message.get("sources", []):
+            sources_expander.markdown(f"- `{source}`")
 
 question = assistant_tab.chat_input(
     "اسأل مساعد CSSD..." if response_language == "Arabic" else "Ask CSSD AI Assistant..."
 )
 if question:
-    with assistant_tab.chat_message("user"):
-        assistant_tab.markdown(question)
+    question_message = assistant_tab.chat_message("user")
+    question_message.markdown(question)
 
     previous_history = st.session_state["chat_history"][-HISTORY_MESSAGE_COUNT:]
     st.session_state["chat_history"].append({"role": "user", "content": question})
@@ -1458,8 +1480,8 @@ if question:
         st.session_state["answer_feedback_message_choice"] = (
             len(st.session_state["chat_history"]) - 1
         )
-        with assistant_tab.chat_message("assistant"):
-            assistant_tab.markdown(answer)
+        answer_message = assistant_tab.chat_message("assistant")
+        answer_message.markdown(answer)
     elif not api_key:
         assistant_tab.error(
             "AI answers are unavailable until OPENROUTER_API_KEY is configured in Streamlit Secrets."
@@ -1553,12 +1575,12 @@ if question:
                 st.session_state["answer_feedback_message_choice"] = (
                     len(st.session_state["chat_history"]) - 1
                 )
-                with assistant_tab.chat_message("assistant"):
-                    assistant_tab.markdown(answer)
-                    if sources:
-                        with assistant_tab.expander(sources_label):
-                            for source in sources:
-                                assistant_tab.markdown(f"- `{source}`")
+                answer_message = assistant_tab.chat_message("assistant")
+                answer_message.markdown(answer)
+                if sources:
+                    sources_expander = answer_message.expander(sources_label)
+                    for source in sources:
+                        sources_expander.markdown(f"- `{source}`")
         except OpenAIError as error:
             assistant_tab.error(f"OpenRouter request failed: {error}")
         except requests.RequestException as error:
