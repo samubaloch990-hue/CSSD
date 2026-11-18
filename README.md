@@ -12,7 +12,7 @@ OPENROUTER_API_KEY = "your-api-key"
 
 Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions, relevant document passages, and aggregate feedback themes may be sent to OpenRouter; raw feedback notes and full chats are not.
 
-Conversation history is kept only for the active app session. The assistant is instructed to interpret typos, slang, fragments, and speech-to-text mistakes, and to ask for clarification when the intent is unclear. Shared feedback can influence future answers for everyone, but this is prompt-level adaptation, not training the underlying model; no full chats are saved for learning. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
+Conversation history is kept only for the active app session. Answers are concise and simple by default; users can ask for more explanation. Document sources are grouped at the end instead of repeated after individual sentences. The assistant is also instructed to interpret typos, slang, fragments, and speech-to-text mistakes, and to ask for clarification when the intent is unclear. Shared feedback can influence future answers for everyone, but this is prompt-level adaptation, not training the underlying model; no full chats are saved for learning. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
 
 ## Shared document library
 
