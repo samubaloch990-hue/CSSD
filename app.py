@@ -1025,7 +1025,7 @@ st.markdown(
     .block-container {
         max-width: 860px;
         padding-top: 3rem;
-        padding-bottom: 3rem;
+        padding-bottom: 8rem;
     }
     h1 {
         color: #14213d;
@@ -1055,10 +1055,22 @@ st.markdown(
         background: #eff7f3;
     }
     [data-testid="stChatInput"] {
+        position: fixed;
+        left: 50%;
+        bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+        z-index: 1000;
+        width: min(828px, calc(100vw - 2rem));
+        transform: translateX(-50%);
         border: 1px solid #cbd8e9;
         border-radius: 16px;
         background: #f0f5fc;
         box-shadow: 0 8px 26px rgba(15, 23, 42, 0.07);
+    }
+    [data-testid="stAppViewContainer"]:has(
+        [data-testid="stSidebar"][data-collapsed="false"]
+    ) [data-testid="stChatInput"] {
+        left: calc(50% + 150px);
+        width: min(828px, calc(100vw - 340px));
     }
     [data-testid="stChatInput"] textarea {
         background: transparent;
@@ -1083,7 +1095,15 @@ st.markdown(
     }
     @media (max-width: 640px) {
         .block-container {
-            padding: 1.5rem 1rem 2rem;
+            padding: 1.5rem 1rem 7rem;
+        }
+        [data-testid="stChatInput"],
+        [data-testid="stAppViewContainer"]:has(
+            [data-testid="stSidebar"][data-collapsed="false"]
+        ) [data-testid="stChatInput"] {
+            left: 1rem;
+            width: calc(100vw - 2rem);
+            transform: none;
         }
         h1 {
             font-size: 1.9rem !important;
