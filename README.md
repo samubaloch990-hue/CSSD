@@ -24,7 +24,7 @@ Streamlit Community Cloud installs Tesseract from `packages.txt`. For local use,
 
 The app can remember corrected facts for all users without saving full chat transcripts. Each topic has one saved correction; a new correction for the same topic replaces the previous one. The PIN authorizes a change but does not verify that the fact itself is true.
 
-Users can optionally rate answers and send a short suggestion. Only the rating and suggestion are stored; the question and answer are not. Feedback is visible only after the owner enters the PIN and is never added to the assistant's knowledge automatically. Review a suggestion, then use **Correct shared knowledge** if it should become a shared correction.
+Users can optionally rate answers and send a short suggestion from **Give feedback** in the sidebar. They can choose which answer to rate. Only the rating and suggestion are stored; the question and answer are not. Feedback is visible only after the owner enters the PIN and is never added to the assistant's knowledge automatically. Review a suggestion, then use **Correct shared knowledge** if it should become a shared correction.
 
 1. Create a Supabase project and run this in its SQL Editor. This creates the shared document, correction memory, and feedback tables:
 
