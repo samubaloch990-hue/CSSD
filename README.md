@@ -24,7 +24,9 @@ Streamlit Community Cloud installs Tesseract from `packages.txt`. For local use,
 
 The app can remember corrected facts for all users without saving full chat transcripts. Each topic has one saved correction; a new correction for the same topic replaces the previous one. The PIN authorizes a change but does not verify that the fact itself is true.
 
-1. Create a Supabase project and run this in its SQL Editor. This creates the tables for both the shared document library and correction memory:
+Users can optionally rate answers and send a short suggestion. Only the rating and suggestion are stored; the question and answer are not. Feedback is visible only after the owner enters the PIN and is never added to the assistant's knowledge automatically. Review a suggestion, then use **Correct shared knowledge** if it should become a shared correction.
+
+1. Create a Supabase project and run this in its SQL Editor. This creates the shared document, correction memory, and feedback tables:
 
    ```sql
    create table if not exists public.assistant_memory (
@@ -41,12 +43,25 @@ The app can remember corrected facts for all users without saving full chat tran
        updated_at timestamptz not null default now()
    );
 
+   create table if not exists public.assistant_feedback (
+       feedback_id uuid primary key default gen_random_uuid(),
+       rating smallint not null check (rating in (-1, 1)),
+       suggestion text not null default ''
+           check (char_length(suggestion) <= 1000),
+       status text not null default 'pending'
+           check (status in ('pending', 'reviewed')),
+       created_at timestamptz not null default now()
+   );
+
    alter table public.assistant_memory enable row level security;
    alter table public.assistant_documents enable row level security;
+   alter table public.assistant_feedback enable row level security;
 
-   revoke all on table public.assistant_memory, public.assistant_documents
+   revoke all on table public.assistant_memory, public.assistant_documents,
+       public.assistant_feedback
        from anon, authenticated;
-   grant all on table public.assistant_memory, public.assistant_documents
+   grant all on table public.assistant_memory, public.assistant_documents,
+       public.assistant_feedback
        to service_role;
    ```
 
@@ -60,4 +75,4 @@ The app can remember corrected facts for all users without saving full chat tran
 
    Keep these values private. Do not commit them to GitHub or paste them into chat.
 
-3. In the app sidebar, use **Manage shared documents** to add documents once. Use **Correct shared knowledge** to submit a topic and its corrected fact. A wrong PIN makes no database change. Only trusted people should know the PIN because saved documents and approved corrections are shared with all app users.
+3. In the app sidebar, use **Manage shared documents** to add documents once. Use **Correct shared knowledge** to submit a topic and its corrected fact. A wrong PIN makes no database change. Use **Review user feedback** to review suggestions; marking feedback reviewed does not automatically change assistant knowledge. Only trusted people should know the PIN because saved documents and approved corrections are shared with all app users.

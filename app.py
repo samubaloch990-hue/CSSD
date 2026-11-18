@@ -32,6 +32,8 @@ MAX_SHARED_DOCUMENTS = 10
 MAX_FILENAME_CHARS = 255
 MAX_TOPIC_CHARS = 100
 MAX_CORRECTION_CHARS = 1000
+MAX_FEEDBACK_CHARS = 1000
+MAX_PENDING_FEEDBACK_ITEMS = 50
 MAX_SHARED_MEMORY_ITEMS = 40
 MIN_PIN_LENGTH = 6
 GREETING_PATTERN = re.compile(
@@ -177,6 +179,117 @@ def save_shared_correction(
         timeout=5,
     )
     response.raise_for_status()
+
+
+def save_shared_feedback(
+    config: SupabaseConfig,
+    rating: int,
+    suggestion: str,
+) -> None:
+    if type(rating) is not int or rating not in (-1, 1):
+        raise ValueError("Choose whether the answer was helpful or needs improvement.")
+    if len(suggestion) > MAX_FEEDBACK_CHARS:
+        raise ValueError(
+            f"Feedback must be no more than {MAX_FEEDBACK_CHARS} characters."
+        )
+
+    response = requests.post(
+        f"{config.url}/rest/v1/assistant_feedback",
+        headers={
+            **supabase_headers(config.service_role_key),
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+        json={
+            "rating": rating,
+            "suggestion": suggestion.strip(),
+        },
+        timeout=5,
+    )
+    response.raise_for_status()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_pending_feedback(
+    supabase_url: str,
+    _service_role_key: str,
+) -> list[dict[str, str]]:
+    response = requests.get(
+        f"{supabase_url}/rest/v1/assistant_feedback",
+        params={
+            "select": "feedback_id,rating,suggestion,created_at",
+            "status": "eq.pending",
+            "order": "created_at.asc",
+            "limit": str(MAX_PENDING_FEEDBACK_ITEMS),
+        },
+        headers=supabase_headers(_service_role_key),
+        timeout=5,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list):
+        raise ValueError("The feedback database returned an invalid response.")
+
+    pending_feedback: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("The feedback database returned an invalid entry.")
+        feedback_id = row.get("feedback_id")
+        rating = row.get("rating")
+        suggestion = row.get("suggestion")
+        created_at = row.get("created_at")
+        if (
+            not isinstance(feedback_id, str)
+            or not re.fullmatch(
+                r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}",
+                feedback_id,
+                re.IGNORECASE,
+            )
+            or type(rating) is not int
+            or rating not in (-1, 1)
+            or not isinstance(suggestion, str)
+            or len(suggestion) > MAX_FEEDBACK_CHARS
+            or not isinstance(created_at, str)
+            or not created_at
+        ):
+            raise ValueError("A feedback entry is invalid.")
+        pending_feedback.append(
+            {
+                "feedback_id": feedback_id,
+                "rating": str(rating),
+                "suggestion": suggestion,
+                "created_at": created_at,
+            }
+        )
+    return pending_feedback
+
+
+def mark_feedback_reviewed(config: SupabaseConfig, feedback_id: str) -> None:
+    if not re.fullmatch(
+        r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}",
+        feedback_id,
+        re.IGNORECASE,
+    ):
+        raise ValueError("The selected feedback has an invalid identifier.")
+
+    response = requests.patch(
+        f"{config.url}/rest/v1/assistant_feedback",
+        params={
+            "feedback_id": f"eq.{feedback_id}",
+            "status": "eq.pending",
+        },
+        headers={
+            **supabase_headers(config.service_role_key),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
+        json={"status": "reviewed"},
+        timeout=5,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("This feedback is no longer pending.")
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -591,6 +704,61 @@ def answer_question(
     return response.output_text.strip()
 
 
+def render_answer_feedback(
+    message_index: int,
+    config: SupabaseConfig | None,
+) -> None:
+    message = st.session_state["chat_history"][message_index]
+    if message.get("feedback_submitted"):
+        st.caption("Thanks. Your feedback was sent for owner review.")
+        return
+
+    st.caption("Optional: only your rating and note are saved, not this chat.")
+    with st.form(f"answer_feedback_{message_index}"):
+        rating_label = st.selectbox(
+            "Rate this answer",
+            options=["Choose a rating", "Helpful", "Needs improvement"],
+            key=f"answer_feedback_rating_{message_index}",
+        )
+        suggestion = st.text_area(
+            "Optional suggestion (do not include private information)",
+            max_chars=MAX_FEEDBACK_CHARS,
+            key=f"answer_feedback_suggestion_{message_index}",
+        )
+        submitted = st.form_submit_button("Send feedback")
+
+    if not submitted:
+        return
+    if rating_label == "Choose a rating":
+        st.error("Choose a rating before sending feedback.")
+        return
+    if config is None:
+        st.error("Feedback is unavailable until Supabase is configured.")
+        return
+
+    rating = 1 if rating_label == "Helpful" else -1
+    try:
+        save_shared_feedback(config, rating, suggestion)
+    except ValueError as error:
+        st.error(str(error))
+    except requests.RequestException as error:
+        status_code = (
+            error.response.status_code
+            if error.response is not None
+            else "unavailable"
+        )
+        if status_code == 404:
+            st.error(
+                "The feedback table is missing. Create assistant_feedback using "
+                "the SQL in the README."
+            )
+        else:
+            st.error(f"Could not send feedback (database response: {status_code}).")
+    else:
+        message["feedback_submitted"] = True
+        st.success("Feedback sent to the owner for review. This chat was not saved.")
+
+
 st.set_page_config(
     page_title="CSSD AI Assistant",
     page_icon="🤖",
@@ -890,6 +1058,81 @@ else:
                             "replace the previous entry for this topic."
                         )
 
+        with st.sidebar.expander("📝 Review user feedback"):
+            if not st.session_state.get("feedback_review_unlocked", False):
+                with st.form("feedback_review_access_form", clear_on_submit=True):
+                    review_pin = st.text_input(
+                        "Verification PIN",
+                        type="password",
+                        key="feedback_review_pin",
+                    )
+                    unlock_feedback = st.form_submit_button("Show pending feedback")
+
+                if unlock_feedback:
+                    if not hmac.compare_digest(
+                        review_pin.encode("utf-8"),
+                        edit_pin.encode("utf-8"),
+                    ):
+                        st.error("PIN is incorrect. Feedback was not shown.")
+                    else:
+                        st.session_state["feedback_review_unlocked"] = True
+
+            if st.session_state.get("feedback_review_unlocked", False):
+                if st.button("Lock feedback review", key="lock_feedback_review"):
+                    st.session_state["feedback_review_unlocked"] = False
+                    st.rerun()
+
+                try:
+                    pending_feedback = load_pending_feedback(
+                        supabase_config.url,
+                        supabase_config.service_role_key,
+                    )
+                except requests.RequestException as error:
+                    status_code = (
+                        error.response.status_code
+                        if error.response is not None
+                        else "unavailable"
+                    )
+                    if status_code == 404:
+                        st.error(
+                            "Create the assistant_feedback table using the SQL in "
+                            "the README before reviewing feedback."
+                        )
+                    else:
+                        st.error(
+                            "Could not load feedback "
+                            f"(database response: {status_code})."
+                        )
+                except ValueError as error:
+                    st.error(str(error))
+                else:
+                    if not pending_feedback:
+                        st.caption("There is no feedback waiting for review.")
+                    for feedback in pending_feedback:
+                        rating_text = (
+                            "Helpful" if feedback["rating"] == "1" else "Needs improvement"
+                        )
+                        st.markdown(f"**{rating_text}**")
+                        st.caption(f"Received: {feedback['created_at']}")
+                        if feedback["suggestion"]:
+                            st.text(feedback["suggestion"])
+                        else:
+                            st.caption("No suggestion was provided.")
+                        if st.button(
+                            "Mark reviewed",
+                            key=f"review_feedback_{feedback['feedback_id']}",
+                        ):
+                            try:
+                                mark_feedback_reviewed(
+                                    supabase_config,
+                                    feedback["feedback_id"],
+                                )
+                            except (ValueError, requests.RequestException) as error:
+                                st.error(f"Could not mark feedback reviewed: {error}")
+                            else:
+                                load_pending_feedback.clear()
+                                st.rerun()
+
 api_key = get_api_key()
 if not api_key:
     st.sidebar.warning(
@@ -899,13 +1142,15 @@ if not api_key:
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
-for message in st.session_state["chat_history"]:
+for message_index, message in enumerate(st.session_state["chat_history"]):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message.get("sources"):
             with st.expander("Sources"):
                 for source in message.get("sources", []):
                     st.markdown(f"- `{source}`")
+        if message["role"] == "assistant":
+            render_answer_feedback(message_index, supabase_config)
 
 question = st.chat_input("Ask CSSD AI Assistant...")
 if question:
@@ -917,11 +1162,13 @@ if question:
 
     if is_greeting(question):
         answer = "Hello! What can I help you with?"
-        with st.chat_message("assistant"):
-            st.markdown(answer)
+        assistant_index = len(st.session_state["chat_history"])
         st.session_state["chat_history"].append(
             {"role": "assistant", "content": answer, "sources": []}
         )
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+            render_answer_feedback(assistant_index, supabase_config)
     elif not api_key:
         st.error(
             "AI answers are unavailable until OPENROUTER_API_KEY is configured in Streamlit Secrets."
@@ -978,15 +1225,17 @@ if question:
                 st.error("The AI returned an empty answer. Please try again.")
             else:
                 sources = list(dict.fromkeys(chunk.source for chunk in relevant_chunks))
+                assistant_index = len(st.session_state["chat_history"])
+                st.session_state["chat_history"].append(
+                    {"role": "assistant", "content": answer, "sources": sources}
+                )
                 with st.chat_message("assistant"):
                     st.markdown(answer)
                     if sources:
                         with st.expander("Sources"):
                             for source in sources:
                                 st.markdown(f"- `{source}`")
-                st.session_state["chat_history"].append(
-                    {"role": "assistant", "content": answer, "sources": sources}
-                )
+                    render_answer_feedback(assistant_index, supabase_config)
         except OpenAIError as error:
             st.error(f"OpenRouter request failed: {error}")
         except requests.RequestException as error:
