@@ -12,6 +12,10 @@ OPENROUTER_API_KEY = "your-api-key"
 
 Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions and relevant document passages are sent to OpenRouter; avoid submitting sensitive documents.
 
+## Optional web search
+
+Turn on **Search the web if needed** above the chat input to let the assistant search when it cannot answer confidently from its existing knowledge or when the question needs current information. Search is off by default. When used, the answer shows direct source links. Web search is billed through OpenRouter separately from model usage; the current estimated rate is about $0.007 per search. Because this app is public, any visitor can trigger a search while the option is on. The question and search query are sent to OpenRouter.
+
 Conversation history is kept only for the active app session. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
 
 ## Shared document library

@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
+from urllib.parse import urlsplit
 
 import requests
 import streamlit as st
@@ -26,6 +27,7 @@ CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
 RETRIEVAL_COUNT = 6
 HISTORY_MESSAGE_COUNT = 8
+MAX_WEB_SEARCH_RESULTS = 3
 MAX_SHARED_DOCUMENTS = 10
 MAX_FILENAME_CHARS = 255
 MAX_TOPIC_CHARS = 100
@@ -58,6 +60,12 @@ class UploadedDocument(Protocol):
 class DocumentChunk:
     source: str
     text: str
+
+
+@dataclass(frozen=True)
+class AnswerResult:
+    text: str
+    web_references: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -451,6 +459,60 @@ def retrieve_chunks(
     return [chunk for _, chunk in ranked_chunks[:RETRIEVAL_COUNT]]
 
 
+def extract_web_references(
+    response_data: dict[str, object],
+) -> tuple[tuple[str, str], ...]:
+    output = response_data.get("output")
+    if not isinstance(output, list):
+        return ()
+
+    references: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            annotations = part.get("annotations")
+            if not isinstance(annotations, list):
+                continue
+            for annotation in annotations:
+                if not isinstance(annotation, dict):
+                    continue
+                citation = annotation.get("url_citation", annotation)
+                if not isinstance(citation, dict):
+                    continue
+                url = citation.get("url")
+                if (
+                    not isinstance(url, str)
+                    or any(character in url for character in "\r\n<>")
+                ):
+                    continue
+                try:
+                    parsed_url = urlsplit(url)
+                except ValueError:
+                    continue
+                if (
+                    parsed_url.scheme not in {"http", "https"}
+                    or not parsed_url.netloc
+                ):
+                    continue
+                if url in seen_urls:
+                    continue
+
+                title = citation.get("title")
+                if not isinstance(title, str) or not title.strip():
+                    title = parsed_url.netloc
+                title = re.sub(r"[\r\n\[\]]", " ", title).strip()
+                references.append((title or parsed_url.netloc, url))
+                seen_urls.add(url)
+    return tuple(references)
+
+
 def answer_question(
     client: OpenAI,
     question: str,
@@ -458,7 +520,8 @@ def answer_question(
     relevant_chunks: list[DocumentChunk],
     shared_corrections: list[dict[str, str]],
     quick_response: bool = False,
-) -> str:
+    web_search_enabled: bool = False,
+) -> AnswerResult:
     passages = "\n\n".join(
         f"[Source: {chunk.source}]\n{chunk.text}" for chunk in relevant_chunks
     )
@@ -471,6 +534,16 @@ def answer_question(
         for message in history[-HISTORY_MESSAGE_COUNT:]
     ]
     instructions = SYSTEM_INSTRUCTIONS
+    if web_search_enabled:
+        instructions += (
+            "\n\nWeb search is available. First use the conversation, relevant "
+            "shared documents, and shared corrections. Search when they do not "
+            "answer the question and you cannot answer confidently from stable "
+            "knowledge, or when the user asks for current information. Prefer "
+            "official or primary sources. Cite searched claims using the provided "
+            "sources; never invent citations. If reliable results are unavailable, "
+            "say so."
+        )
     if shared_corrections:
         memory_text = "\n".join(
             f"- {item['topic']}: {item['correction']}"
@@ -488,6 +561,23 @@ def answer_question(
         *api_history,
         {"role": "user", "content": current_input},
     ]
+    search_request = (
+        {
+            "tools": [
+                {
+                    "type": "openrouter:web_search",
+                    "parameters": {
+                        "engine": "auto",
+                        "max_results": MAX_WEB_SEARCH_RESULTS,
+                        "max_total_results": MAX_WEB_SEARCH_RESULTS,
+                        "max_uses": 1,
+                    },
+                }
+            ]
+        }
+        if web_search_enabled
+        else {}
+    )
     if quick_response:
         response = client.responses.create(
             model=MODEL,
@@ -496,6 +586,7 @@ def answer_question(
             max_output_tokens=500,
             reasoning={"effort": "none"},
             store=False,
+            extra_body=search_request,
         )
     else:
         response = client.responses.create(
@@ -504,8 +595,12 @@ def answer_question(
             input=request_input,
             max_output_tokens=1800,
             store=False,
+            extra_body=search_request,
         )
-    return response.output_text.strip()
+    return AnswerResult(
+        text=response.output_text.strip(),
+        web_references=extract_web_references(response.model_dump()),
+    )
 
 
 st.set_page_config(
@@ -585,6 +680,19 @@ st.markdown(
 )
 st.caption(
     "Shared documents are visible to everyone. Relevant passages may be sent to OpenRouter."
+)
+web_search_enabled = st.toggle(
+    "Search the web if needed",
+    value=False,
+    help=(
+        "When enabled, the assistant may search if it cannot answer from its "
+        "knowledge or needs current information. Web searches use OpenRouter "
+        "credits and may be charged to the owner of this public app."
+    ),
+)
+st.caption(
+    "When enabled, web search currently costs about $0.007 per search, in "
+    "addition to AI usage."
 )
 
 st.sidebar.header("📚 Knowledge & documents")
@@ -814,10 +922,13 @@ if "chat_history" not in st.session_state:
 for message in st.session_state["chat_history"]:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if message.get("sources"):
+        web_references = message.get("web_references", [])
+        if message.get("sources") or web_references:
             with st.expander("Sources"):
-                for source in message["sources"]:
+                for source in message.get("sources", []):
                     st.markdown(f"- `{source}`")
+                for title, url in web_references:
+                    st.markdown(f"- {title}: <{url}>")
 
 question = st.chat_input("Ask CSSD AI Assistant...")
 if question:
@@ -848,7 +959,12 @@ if question:
             },
         )
         try:
-            with st.spinner("Finding relevant passages and preparing your answer..."):
+            spinner_text = (
+                "Checking documents and searching the web if needed..."
+                if web_search_enabled
+                else "Finding relevant passages and preparing your answer..."
+            )
+            with st.spinner(spinner_text):
                 document_versions = tuple(
                     (document["document_id"], document["updated_at"])
                     for document in shared_documents
@@ -877,27 +993,36 @@ if question:
                         "Saved shared documents could not be loaded. This answer "
                         "will use only available session uploads and corrections."
                     )
-                answer = answer_question(
+                answer_result = answer_question(
                     client,
                     question,
                     previous_history,
                     relevant_chunks,
                     shared_corrections,
                     quick_response=quick_response,
+                    web_search_enabled=web_search_enabled,
                 )
 
-            if not answer:
+            if not answer_result.text:
                 st.error("The AI returned an empty answer. Please try again.")
             else:
                 sources = list(dict.fromkeys(chunk.source for chunk in relevant_chunks))
+                web_references = answer_result.web_references
                 with st.chat_message("assistant"):
-                    st.markdown(answer)
-                    if sources:
+                    st.markdown(answer_result.text)
+                    if sources or web_references:
                         with st.expander("Sources"):
                             for source in sources:
                                 st.markdown(f"- `{source}`")
+                            for title, url in web_references:
+                                st.markdown(f"- {title}: <{url}>")
                 st.session_state["chat_history"].append(
-                    {"role": "assistant", "content": answer, "sources": sources}
+                    {
+                        "role": "assistant",
+                        "content": answer_result.text,
+                        "sources": sources,
+                        "web_references": web_references,
+                    }
                 )
         except OpenAIError as error:
             st.error(f"OpenRouter request failed: {error}")
