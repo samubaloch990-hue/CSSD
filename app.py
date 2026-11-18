@@ -36,7 +36,7 @@ MAX_SHARED_FEEDBACK_ITEMS = 100
 MIN_FEEDBACK_THEME_COUNT = 3
 MAX_PENDING_FEEDBACK_ITEMS = 50
 MAX_SHARED_MEMORY_ITEMS = 40
-MIN_PASSPHRASE_LENGTH = 16
+PIN_PATTERN = re.compile(r"[0-9]{6}")
 MAX_NOTIFICATIONS = 20
 SHARED_FEEDBACK_THEMES = (
     (
@@ -181,6 +181,86 @@ def supabase_headers(service_role_key: str) -> dict[str, str]:
         "apikey": service_role_key,
         "Authorization": f"Bearer {service_role_key}",
     }
+
+
+def verify_admin_pin(
+    config: SupabaseConfig,
+    expected_pin: str,
+    submitted_pin: str,
+) -> bool:
+    if PIN_PATTERN.fullmatch(expected_pin) is None:
+        raise ValueError("MEMORY_EDIT_PIN must be exactly six digits.")
+
+    rate_limit_url = f"{config.url}/rest/v1/rpc/consume_admin_pin_attempt"
+    headers = {
+        **supabase_headers(config.service_role_key),
+        "Content-Type": "application/json",
+    }
+    response = requests.post(rate_limit_url, headers=headers, json={}, timeout=5)
+    if response.status_code == 404:
+        raise ValueError(
+            "PIN rate limiting is not configured. Run the PIN rate-limit SQL in "
+            "the README before enabling shared edits."
+        )
+    response.raise_for_status()
+    result = response.json()
+    if (
+        not isinstance(result, list)
+        or len(result) != 1
+        or not isinstance(result[0], dict)
+        or type(result[0].get("allowed")) is not bool
+    ):
+        raise ValueError("Supabase returned an invalid PIN rate-limit response.")
+    if not result[0]["allowed"]:
+        raise ValueError(
+            "Too many PIN attempts. Shared edits are locked for up to one hour."
+        )
+
+    if not hmac.compare_digest(
+        submitted_pin.encode("utf-8"),
+        expected_pin.encode("utf-8"),
+    ):
+        return False
+
+    reset_response = requests.post(
+        f"{config.url}/rest/v1/rpc/reset_admin_pin_attempts",
+        headers=headers,
+        json={},
+        timeout=5,
+    )
+    if reset_response.status_code == 404:
+        raise ValueError(
+            "PIN rate limiting is not configured. Run the PIN rate-limit SQL in "
+            "the README before enabling shared edits."
+        )
+    reset_response.raise_for_status()
+    return True
+
+
+def check_admin_pin(
+    config: SupabaseConfig,
+    expected_pin: str,
+    submitted_pin: str,
+    failure_message: str,
+) -> bool:
+    try:
+        accepted = verify_admin_pin(config, expected_pin, submitted_pin)
+    except requests.RequestException as error:
+        status_code = (
+            error.response.status_code if error.response is not None else "unavailable"
+        )
+        st.error(
+            "Could not verify the PIN "
+            f"(database response: {status_code}). No changes were made."
+        )
+        return False
+    except ValueError as error:
+        st.error(str(error))
+        return False
+
+    if not accepted:
+        st.error(failure_message)
+    return accepted
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -1083,17 +1163,17 @@ else:
     with st.sidebar.expander("📚 Manage shared documents"):
         st.caption(
             "Everyone can ask questions about saved documents. Only people with "
-            "the verification passphrase can add, replace, or remove them."
+            "the six-digit PIN can add, replace, or remove them."
         )
         if shared_documents_error:
             st.error(
                 "Create the assistant_documents table using the SQL in the README "
                 "before managing saved documents."
             )
-        elif not edit_pin or len(edit_pin) < MIN_PASSPHRASE_LENGTH:
+        elif not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
             st.caption(
-                f"Set MEMORY_EDIT_PIN to a random passphrase of at least "
-                f"{MIN_PASSPHRASE_LENGTH} characters to manage shared documents."
+                "Set MEMORY_EDIT_PIN to an exactly six-digit PIN to manage "
+                "shared documents."
             )
         else:
             if shared_documents:
@@ -1113,21 +1193,20 @@ else:
                     key="shared_documents_uploader",
                 )
                 upload_pin = st.text_input(
-                    "Verification passphrase",
+                    "6-digit PIN",
                     type="password",
+                    max_chars=6,
                     key="shared_documents_upload_pin",
                 )
                 upload_submitted = st.form_submit_button("Save for everyone")
 
             if upload_submitted:
-                if not hmac.compare_digest(
-                    upload_pin.encode("utf-8"),
-                    edit_pin.encode("utf-8"),
+                if check_admin_pin(
+                    supabase_config,
+                    edit_pin,
+                    upload_pin,
+                    "PIN is incorrect. No shared documents were changed.",
                 ):
-                    st.error(
-                        "Passphrase is incorrect. No shared documents were changed."
-                    )
-                else:
                     try:
                         with st.spinner("Extracting text from uploaded documents..."):
                             documents_to_save = prepare_shared_documents(
@@ -1170,21 +1249,20 @@ else:
                         ),
                     )
                     delete_pin = st.text_input(
-                        "Verification passphrase",
+                        "6-digit PIN",
                         type="password",
+                        max_chars=6,
                         key="shared_document_delete_pin",
                     )
                     delete_submitted = st.form_submit_button("Remove document")
 
                 if delete_submitted:
-                    if not hmac.compare_digest(
-                        delete_pin.encode("utf-8"),
-                        edit_pin.encode("utf-8"),
+                    if check_admin_pin(
+                        supabase_config,
+                        edit_pin,
+                        delete_pin,
+                        "PIN is incorrect. No shared document was removed.",
                     ):
-                        st.error(
-                            "Passphrase is incorrect. No shared document was removed."
-                        )
-                    else:
                         try:
                             delete_shared_document(
                                 supabase_config,
@@ -1208,10 +1286,10 @@ else:
                             build_shared_retrieval_index.clear()
                             st.rerun()
 
-    if not edit_pin or len(edit_pin) < MIN_PASSPHRASE_LENGTH:
+    if not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
         current_notifications.append(
-            f"Set MEMORY_EDIT_PIN in Streamlit Secrets to a random passphrase of at "
-            f"least {MIN_PASSPHRASE_LENGTH} characters to enable shared edits."
+            "Set MEMORY_EDIT_PIN in Streamlit Secrets to a six-digit numeric PIN "
+            "and run the PIN rate-limit SQL in the README to enable shared edits."
         )
     else:
         with st.sidebar.expander("🧠 Correct shared knowledge"):
@@ -1225,18 +1303,19 @@ else:
                     max_chars=MAX_CORRECTION_CHARS,
                 )
                 entered_pin = st.text_input(
-                    "Verification passphrase",
+                    "6-digit PIN",
                     type="password",
+                    max_chars=6,
                 )
                 correction_submitted = st.form_submit_button("Verify and save")
 
-            if correction_submitted:
-                if not hmac.compare_digest(
-                    entered_pin.encode("utf-8"),
-                    edit_pin.encode("utf-8"),
-                ):
-                    st.error("Passphrase is incorrect. Nothing was changed.")
-                elif not correction_topic.strip() or not correction_text.strip():
+            if correction_submitted and check_admin_pin(
+                supabase_config,
+                edit_pin,
+                entered_pin,
+                "PIN is incorrect. Nothing was changed.",
+            ):
+                if not correction_topic.strip() or not correction_text.strip():
                     st.error("Enter both a topic and the corrected information.")
                 else:
                     try:
@@ -1260,7 +1339,7 @@ else:
                     else:
                         load_shared_corrections.clear()
                         add_notification(
-                            "Passphrase accepted. The shared correction was saved and will "
+                            "PIN accepted. The shared correction was saved and will "
                             "replace the previous entry for this topic."
                         )
 
@@ -1268,20 +1347,20 @@ else:
             if not st.session_state.get("feedback_review_unlocked", False):
                 with st.form("feedback_review_access_form", clear_on_submit=True):
                     review_pin = st.text_input(
-                        "Verification passphrase",
+                        "6-digit PIN",
                         type="password",
+                        max_chars=6,
                         key="feedback_review_pin",
                     )
                     unlock_feedback = st.form_submit_button("Show pending feedback")
 
-                if unlock_feedback:
-                    if not hmac.compare_digest(
-                        review_pin.encode("utf-8"),
-                        edit_pin.encode("utf-8"),
-                    ):
-                        st.error("Passphrase is incorrect. Feedback was not shown.")
-                    else:
-                        st.session_state["feedback_review_unlocked"] = True
+                if unlock_feedback and check_admin_pin(
+                    supabase_config,
+                    edit_pin,
+                    review_pin,
+                    "PIN is incorrect. Feedback was not shown.",
+                ):
+                    st.session_state["feedback_review_unlocked"] = True
 
             if st.session_state.get("feedback_review_unlocked", False):
                 if st.button("Lock feedback review", key="lock_feedback_review"):
