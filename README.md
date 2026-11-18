@@ -1,6 +1,6 @@
 # CSSD AI Assistant
 
-CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from shared documents. It supports PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex questions retain deeper reasoning.
+CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from shared documents. It supports PDF, TXT, CSV, and Markdown files. Choose English or Arabic in the sidebar for assistant replies; Arabic replies use Modern Standard Arabic and right-to-left chat text. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex questions retain deeper reasoning.
 
 ## Configure the API key
 
@@ -65,14 +65,14 @@ Users can optionally rate answers and send a short suggestion from **Give feedba
        to service_role;
    ```
 
-2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add the Supabase project URL, private service-role key, and a private passphrase of at least 6 characters (shorter passphrases are easier to guess):
+2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add the Supabase project URL, private service-role key, and a randomly generated passphrase of at least 16 characters:
 
    ```toml
    SUPABASE_URL = "https://your-project.supabase.co"
    SUPABASE_SERVICE_ROLE_KEY = "your-private-service-role-key"
-   MEMORY_EDIT_PIN = "choose-a-private-passphrase-of-6-or-more-characters"
+   MEMORY_EDIT_PIN = "replace-with-a-random-secret-of-16-plus-characters"
    ```
 
    Keep these values private. Do not commit them to GitHub or paste them into chat.
 
-3. In the app sidebar, use **Manage shared documents** to add documents once. Use **Correct shared knowledge** to submit a topic and its corrected fact. A wrong PIN makes no database change. Use **Review user feedback** to review suggestions; marking feedback reviewed does not automatically change assistant knowledge. Only trusted people should know the PIN because saved documents and approved corrections are shared with all app users.
+3. In the app sidebar, use **Manage shared documents** to add documents once. Use **Correct shared knowledge** to submit a topic and its corrected fact. An incorrect passphrase makes no database change. Use **Review user feedback** to review suggestions; marking feedback reviewed does not automatically change assistant knowledge. Only trusted people should know the passphrase because saved documents and approved corrections are shared with all app users.
