@@ -22,8 +22,6 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 MAX_FILES = 10
 MAX_FILE_BYTES = 100 * 1024 * 1024
-MAX_DOCUMENT_CHARS = 1_000_000
-MAX_TOTAL_CHARS = 1_000_000
 CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
 RETRIEVAL_COUNT = 6
@@ -317,7 +315,6 @@ def load_shared_documents(
         )
 
     documents: list[dict[str, str]] = []
-    total_chars = 0
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("The shared documents database returned an invalid entry.")
@@ -339,9 +336,6 @@ def load_shared_documents(
             raise ValueError("A shared document entry is invalid.")
         if document_id != shared_document_id(file_name):
             raise ValueError("A shared document entry has an invalid identifier.")
-        total_chars += len(content)
-        if len(content) > MAX_DOCUMENT_CHARS or total_chars > MAX_TOTAL_CHARS:
-            raise ValueError("The shared document library exceeds its size limits.")
         documents.append(
             {
                 "document_id": document_id,
@@ -393,12 +387,6 @@ def extract_text(uploaded_file: UploadedDocument) -> str:
         reader = PdfReader(io.BytesIO(content))
         page_texts = [page.extract_text() or "" for page in reader.pages]
         if any(not text.strip() for text in page_texts):
-            total_characters = sum(len(text) for text in page_texts)
-            if total_characters > MAX_DOCUMENT_CHARS:
-                raise ValueError(
-                    f"{uploaded_file.name} exceeds the {MAX_DOCUMENT_CHARS:,}-character "
-                    "per-document limit."
-                )
             try:
                 pdf_document = pdfium.PdfDocument(content)
             except pdfium.PdfiumError as error:
@@ -464,12 +452,6 @@ def extract_text(uploaded_file: UploadedDocument) -> str:
                         ) from error
                     finally:
                         page.close()
-                    total_characters += len(page_texts[page_index])
-                    if total_characters > MAX_DOCUMENT_CHARS:
-                        raise ValueError(
-                            f"{uploaded_file.name} exceeds the "
-                            f"{MAX_DOCUMENT_CHARS:,}-character per-document limit."
-                        )
             finally:
                 pdf_document.close()
         return "\n".join(page_texts)
@@ -521,11 +503,6 @@ def prepare_shared_documents(
             raise ValueError(f"{file_name} could not be read as a PDF.") from error
         if not content:
             raise ValueError(f"No extractable text was found in {file_name}.")
-        if len(content) > MAX_DOCUMENT_CHARS:
-            raise ValueError(
-                f"{file_name} exceeds the {MAX_DOCUMENT_CHARS:,}-character "
-                "per-document limit."
-            )
         replacements.append(
             {
                 "document_id": document_id,
@@ -543,14 +520,6 @@ def prepare_shared_documents(
         raise ValueError(
             f"The shared library can contain no more than "
             f"{MAX_SHARED_DOCUMENTS} documents."
-        )
-    if (
-        sum(len(document["content"]) for document in merged_documents.values())
-        > MAX_TOTAL_CHARS
-    ):
-        raise ValueError(
-            f"The shared library can contain no more than "
-            f"{MAX_TOTAL_CHARS:,} characters in total."
         )
     return replacements
 

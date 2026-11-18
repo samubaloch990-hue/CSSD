@@ -16,7 +16,7 @@ Conversation history is kept only for the active app session. Saved shared docum
 
 ## Shared document library
 
-Use the single uploader in **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. Scanned English PDFs are read with the free Tesseract OCR engine on the app server; large files may take a few minutes. Each upload can be up to 100 MB. The library supports up to 10 documents, 1,000,000 extracted characters per document, and 1,000,000 characters total.
+Use the single uploader in **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. Scanned English PDFs are read with the free Tesseract OCR engine on the app server; large files may take a few minutes. Each upload can be up to 100 MB. The library supports up to 10 documents and has no app-imposed extracted-text character limit; hosting and database capacity still apply.
 
 Streamlit Community Cloud installs Tesseract from `packages.txt`. For local use, install Tesseract and its English language data separately before uploading scanned PDFs.
 
