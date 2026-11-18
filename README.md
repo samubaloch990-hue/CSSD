@@ -1,6 +1,6 @@
-# AI Knowledge Assistant
+# CSSD AI Assistant
 
-This Streamlit app uses OpenRouter for answers and retrieves relevant passages from session uploads and saved shared documents. It supports PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex and document-based questions retain deeper reasoning.
+CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from session uploads and saved shared documents. It supports PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex and document-based questions retain deeper reasoning.
 
 ## Configure the API key
 

@@ -553,17 +553,82 @@ def answer_question(
 
 
 st.set_page_config(
-    page_title="AI Knowledge Assistant",
+    page_title="CSSD AI Assistant",
     page_icon="🤖",
-    layout="wide",
+    layout="centered",
 )
 
-st.title("📚 AI Document & Topic Knowledge Assistant")
 st.markdown(
-    "Ask questions, explore ideas, and get detailed answers grounded in your uploaded documents."
+    """
+    <style>
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(ellipse at 50% 0%, rgba(219, 234, 254, 0.55), transparent 44%),
+            #f8fafc;
+    }
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+    [data-testid="stSidebar"] {
+        background: #ffffff;
+        border-right: 1px solid #e8edf4;
+    }
+    .block-container {
+        max-width: 860px;
+        padding-top: 3rem;
+        padding-bottom: 3rem;
+    }
+    h1 {
+        color: #14213d;
+        font-size: 2.35rem !important;
+        font-weight: 750 !important;
+        letter-spacing: -0.045em;
+    }
+    [data-testid="stChatMessage"] {
+        padding: 1rem 1.15rem;
+        border: 1px solid #e7edf5;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 5px 18px rgba(15, 23, 42, 0.035);
+    }
+    [data-testid="stChatInput"] {
+        border-color: #d9e2ef;
+        border-radius: 16px;
+        background: #ffffff;
+        box-shadow: 0 8px 26px rgba(15, 23, 42, 0.07);
+    }
+    [data-testid="stChatInput"]:focus-within {
+        border-color: #4f7df3;
+        box-shadow: 0 0 0 3px rgba(79, 125, 243, 0.13);
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] {
+        border: 1px solid #e8edf4;
+        border-radius: 14px;
+        background: #ffffff;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] {
+        border-radius: 14px;
+        background: #f8fafc;
+    }
+    @media (max-width: 640px) {
+        .block-container {
+            padding: 1.5rem 1rem 2rem;
+        }
+        h1 {
+            font-size: 1.9rem !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-st.sidebar.header("📁 Knowledge Base Setup")
+st.title("CSSD AI Assistant")
+st.markdown(
+    "Ask a question, explore a topic, or find answers in the shared knowledge library."
+)
+
+st.sidebar.header("📚 Knowledge & documents")
 uploaded_files = st.sidebar.file_uploader(
     "Upload for this session only (PDF, TXT, CSV, MD)",
     accept_multiple_files=True,
@@ -823,7 +888,7 @@ for message in st.session_state["chat_history"]:
                 for source in message["sources"]:
                     st.markdown(f"- `{source}`")
 
-question = st.chat_input("Ask a question")
+question = st.chat_input("Ask CSSD AI Assistant...")
 if question:
     with st.chat_message("user"):
         st.markdown(question)
