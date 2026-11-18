@@ -4,11 +4,13 @@ import io
 import math
 import os
 import re
+import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
 
+import pypdfium2 as pdfium
 import requests
 import streamlit as st
 from openai import OpenAI, OpenAIError
@@ -276,7 +278,88 @@ def extract_text(uploaded_file: UploadedDocument) -> str:
     content = uploaded_file.getvalue()
     if uploaded_file.name.lower().endswith(".pdf"):
         reader = PdfReader(io.BytesIO(content))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        page_texts = [page.extract_text() or "" for page in reader.pages]
+        if any(not text.strip() for text in page_texts):
+            total_characters = sum(len(text) for text in page_texts)
+            if total_characters > MAX_DOCUMENT_CHARS:
+                raise ValueError(
+                    f"{uploaded_file.name} exceeds the {MAX_DOCUMENT_CHARS:,}-character "
+                    "per-document limit."
+                )
+            try:
+                pdf_document = pdfium.PdfDocument(content)
+            except pdfium.PdfiumError as error:
+                raise ValueError(
+                    f"{uploaded_file.name} could not be opened for OCR."
+                ) from error
+
+            try:
+                for page_index, page_text in enumerate(page_texts):
+                    if page_text.strip():
+                        continue
+                    page = pdf_document[page_index]
+                    try:
+                        bitmap = page.render(scale=1.5, grayscale=True)
+                        try:
+                            image = bitmap.to_pil()
+                            try:
+                                with io.BytesIO() as image_buffer:
+                                    image.save(image_buffer, format="PNG")
+                                    try:
+                                        result = subprocess.run(
+                                            [
+                                                "tesseract",
+                                                "stdin",
+                                                "stdout",
+                                                "-l",
+                                                "eng",
+                                            ],
+                                            input=image_buffer.getvalue(),
+                                            capture_output=True,
+                                            timeout=60,
+                                            check=False,
+                                        )
+                                    except FileNotFoundError as error:
+                                        raise ValueError(
+                                            "OCR is unavailable because Tesseract "
+                                            "is not installed on the server."
+                                        ) from error
+                                    except subprocess.TimeoutExpired as error:
+                                        raise ValueError(
+                                            f"OCR timed out on page "
+                                            f"{page_index + 1} of {uploaded_file.name}."
+                                        ) from error
+                                if result.returncode != 0:
+                                    error_message = result.stderr.decode(
+                                        "utf-8", errors="replace"
+                                    ).strip()
+                                    raise ValueError(
+                                        f"OCR failed on page {page_index + 1} of "
+                                        f"{uploaded_file.name}: {error_message}"
+                                    )
+                                page_texts[page_index] = result.stdout.decode(
+                                    "utf-8", errors="replace"
+                                )
+                            finally:
+                                image.close()
+                        finally:
+                            bitmap.close()
+                    except pdfium.PdfiumError as error:
+                        raise ValueError(
+                            f"Could not render page {page_index + 1} of "
+                            f"{uploaded_file.name} for OCR."
+                        ) from error
+                    finally:
+                        page.close()
+                    total_characters += len(page_texts[page_index])
+                    if total_characters > MAX_DOCUMENT_CHARS:
+                        raise ValueError(
+                            f"{uploaded_file.name} exceeds the "
+                            f"{MAX_DOCUMENT_CHARS:,}-character per-document limit."
+                        )
+            finally:
+                pdf_document.close()
+        return "\n".join(page_texts)
     return content.decode("utf-8", errors="replace")
 
 
@@ -648,6 +731,10 @@ else:
                 for document in shared_documents:
                     st.text(f"• {document['file_name']}")
 
+            st.caption(
+                "Scanned English PDFs are read with free on-server OCR. Large files "
+                "may take a few minutes to process."
+            )
             with st.form("shared_documents_upload_form"):
                 new_shared_files = st.file_uploader(
                     "Add or replace shared documents (PDF, TXT, CSV, MD)",
@@ -670,10 +757,11 @@ else:
                     st.error("PIN is incorrect. No shared documents were changed.")
                 else:
                     try:
-                        documents_to_save = prepare_shared_documents(
-                            new_shared_files or [],
-                            shared_documents,
-                        )
+                        with st.spinner("Extracting text from uploaded documents..."):
+                            documents_to_save = prepare_shared_documents(
+                                new_shared_files or [],
+                                shared_documents,
+                            )
                         save_shared_documents(supabase_config, documents_to_save)
                     except ValueError as error:
                         st.error(str(error))
