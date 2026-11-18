@@ -19,7 +19,7 @@ MODEL = "inclusionai/ling-3.2-flash:free"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 MAX_FILES = 10
-MAX_FILE_BYTES = 5 * 1024 * 1024
+MAX_FILE_BYTES = 100 * 1024 * 1024
 MAX_DOCUMENT_CHARS = 80_000
 MAX_TOTAL_CHARS = 250_000
 CHUNK_WORDS = 220
@@ -304,7 +304,7 @@ def prepare_shared_documents(
     for uploaded_file in uploaded_files:
         if uploaded_file.size > MAX_FILE_BYTES:
             raise ValueError(
-                f"{uploaded_file.name} exceeds the 5 MB per-file limit."
+                f"{uploaded_file.name} exceeds the 100 MB per-file limit."
             )
         file_name = re.split(r"[\\/]", uploaded_file.name)[-1].strip()
         if not file_name or len(file_name) > MAX_FILENAME_CHARS:
@@ -379,7 +379,9 @@ def document_chunks(
 
     for uploaded_file in uploaded_files[:MAX_FILES]:
         if uploaded_file.size > MAX_FILE_BYTES:
-            warnings.append(f"{uploaded_file.name} exceeds the 5 MB per-file limit and was skipped.")
+            warnings.append(
+                f"{uploaded_file.name} exceeds the 100 MB per-file limit and was skipped."
+            )
             continue
 
         try:
