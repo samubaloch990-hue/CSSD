@@ -1,6 +1,6 @@
 # CSSD AI Assistant
 
-CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from session uploads and saved shared documents. It supports PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex and document-based questions retain deeper reasoning.
+CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from shared documents. It supports PDF, TXT, CSV, and Markdown files. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex questions retain deeper reasoning.
 
 ## Configure the API key
 
@@ -12,11 +12,11 @@ OPENROUTER_API_KEY = "your-api-key"
 
 Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions and relevant document passages are sent to OpenRouter; avoid submitting sensitive documents.
 
-Session uploads and conversation history are kept only for the active app session. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
+Conversation history is kept only for the active app session. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
 
 ## Shared document library
 
-Use **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. Each upload can be up to 100 MB. The library supports up to 10 documents, 1,000,000 extracted characters per document, and 1,000,000 characters total. Session uploads are limited to the first 1,000,000 characters per file.
+Use the single uploader in **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. Each upload can be up to 100 MB. The library supports up to 10 documents, 1,000,000 extracted characters per document, and 1,000,000 characters total.
 
 ## Shared correction memory
 

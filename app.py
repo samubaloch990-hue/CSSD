@@ -70,10 +70,9 @@ def is_greeting(question: str) -> bool:
     return bool(GREETING_PATTERN.fullmatch(question.strip()))
 
 
-def use_quick_response(question: str, relevant_chunks: list[DocumentChunk]) -> bool:
+def use_quick_response(question: str) -> bool:
     return (
-        not relevant_chunks
-        and len(question.split()) <= 12
+        len(question.split()) <= 12
         and not COMPLEX_QUESTION_PATTERN.search(question)
     )
 
@@ -210,6 +209,7 @@ def load_shared_documents(
         document_id = row.get("document_id")
         file_name = row.get("file_name")
         content = row.get("content")
+        updated_at = row.get("updated_at")
         if (
             not isinstance(document_id, str)
             or not re.fullmatch(r"[a-f0-9]{64}", document_id)
@@ -218,6 +218,8 @@ def load_shared_documents(
             or len(file_name) > MAX_FILENAME_CHARS
             or not isinstance(content, str)
             or not content.strip()
+            or not isinstance(updated_at, str)
+            or not updated_at
         ):
             raise ValueError("A shared document entry is invalid.")
         if document_id != shared_document_id(file_name):
@@ -230,6 +232,7 @@ def load_shared_documents(
                 "document_id": document_id,
                 "file_name": file_name,
                 "content": content,
+                "updated_at": updated_at,
             }
         )
     return documents
@@ -370,93 +373,46 @@ def shared_document_chunks(
     return chunks
 
 
-def document_chunks(
-    uploaded_files: list[UploadedDocument],
-) -> tuple[list[tuple[str, str]], list[str]]:
-    chunks: list[tuple[str, str]] = []
-    warnings: list[str] = []
-    total_chars = 0
+@st.cache_data(ttl=300, show_spinner=False)
+def build_shared_retrieval_index(
+    document_versions: tuple[tuple[str, str], ...],
+    _documents: tuple[dict[str, str], ...],
+) -> tuple[
+    tuple[tuple[str, str], ...],
+    tuple[dict[str, int], ...],
+    dict[str, int],
+    float,
+]:
+    chunks = shared_document_chunks(list(_documents))
+    term_frequencies = tuple(
+        dict(Counter(TOKEN_PATTERN.findall(chunk.text.lower())))
+        for chunk in chunks
+    )
+    document_frequencies: Counter[str] = Counter()
+    for frequencies in term_frequencies:
+        document_frequencies.update(frequencies.keys())
 
-    for uploaded_file in uploaded_files[:MAX_FILES]:
-        if uploaded_file.size > MAX_FILE_BYTES:
-            warnings.append(
-                f"{uploaded_file.name} exceeds the 100 MB per-file limit and was skipped."
-            )
-            continue
-
-        try:
-            text = extract_text(uploaded_file)
-        except PdfReadError:
-            warnings.append(f"{uploaded_file.name} could not be read as a PDF and was skipped.")
-            continue
-
-        text = text.strip()
-        if not text:
-            warnings.append(f"No extractable text was found in {uploaded_file.name}.")
-            continue
-
-        if len(text) > MAX_DOCUMENT_CHARS:
-            text = text[:MAX_DOCUMENT_CHARS]
-            warnings.append(
-                f"{uploaded_file.name} was limited to the first "
-                f"{MAX_DOCUMENT_CHARS:,} characters."
-            )
-
-        remaining_chars = MAX_TOTAL_CHARS - total_chars
-        if remaining_chars <= 0:
-            warnings.append(
-                f"The {MAX_TOTAL_CHARS:,}-character total limit was reached; "
-                "remaining files were skipped."
-            )
-            break
-        if len(text) > remaining_chars:
-            text = text[:remaining_chars]
-            warnings.append(
-                f"The uploaded text was limited to {MAX_TOTAL_CHARS:,} "
-                "characters in total."
-            )
-
-        total_chars += len(text)
-        chunks.extend(split_into_chunks(text, uploaded_file.name))
-
-    if len(uploaded_files) > MAX_FILES:
-        warnings.append(f"Only the first {MAX_FILES} uploaded files are processed.")
-
-    return chunks, warnings
-
-
-def fingerprint_files(uploaded_files: list[UploadedDocument]) -> str:
-    digest = hashlib.sha256()
-    for uploaded_file in uploaded_files:
-        digest.update(uploaded_file.name.encode("utf-8"))
-        digest.update(uploaded_file.getvalue())
-    return digest.hexdigest()
-
-
-def build_index(
-    uploaded_files: list[UploadedDocument],
-) -> list[DocumentChunk]:
-    fingerprint = fingerprint_files(uploaded_files)
-    if st.session_state.get("document_fingerprint") == fingerprint:
-        return st.session_state["document_index"]
-
-    raw_chunks, warnings = document_chunks(uploaded_files)
-    for warning in warnings:
-        st.sidebar.warning(warning)
-
-    indexed_chunks = [
-        DocumentChunk(source=source, text=text) for source, text in raw_chunks
-    ]
-
-    st.session_state["document_fingerprint"] = fingerprint
-    st.session_state["document_index"] = indexed_chunks
-    return indexed_chunks
+    document_count = len(chunks)
+    total_length = sum(
+        sum(frequencies.values()) for frequencies in term_frequencies
+    )
+    average_length = total_length / document_count if document_count else 0.0
+    return (
+        tuple((chunk.source, chunk.text) for chunk in chunks),
+        term_frequencies,
+        dict(document_frequencies),
+        average_length,
+    )
 
 
 def retrieve_chunks(
     question: str,
-    chunks: list[DocumentChunk],
+    document_versions: tuple[tuple[str, str], ...],
+    documents: tuple[dict[str, str], ...],
 ) -> list[DocumentChunk]:
+    chunks, term_frequencies, document_frequencies, average_length = (
+        build_shared_retrieval_index(document_versions, documents)
+    )
     if not chunks:
         return []
 
@@ -464,21 +420,10 @@ def retrieve_chunks(
     if not query_terms:
         return []
 
-    term_frequencies = [
-        Counter(TOKEN_PATTERN.findall(chunk.text.lower())) for chunk in chunks
-    ]
-    document_frequencies: Counter[str] = Counter()
-    for frequencies in term_frequencies:
-        document_frequencies.update(frequencies.keys())
-
     document_count = len(chunks)
-    average_length = (
-        sum(sum(frequencies.values()) for frequencies in term_frequencies)
-        / document_count
-    )
     ranked_chunks: list[tuple[float, DocumentChunk]] = []
 
-    for chunk, frequencies in zip(chunks, term_frequencies):
+    for (source, text), frequencies in zip(chunks, term_frequencies):
         document_length = sum(frequencies.values())
         score = 0.0
         for term in query_terms:
@@ -500,7 +445,7 @@ def retrieve_chunks(
                 / (frequency + length_normalization)
             )
         if score > 0:
-            ranked_chunks.append((score, chunk))
+            ranked_chunks.append((score, DocumentChunk(source=source, text=text)))
 
     ranked_chunks.sort(key=lambda item: item[0], reverse=True)
     return [chunk for _, chunk in ranked_chunks[:RETRIEVAL_COUNT]]
@@ -638,29 +583,11 @@ st.title("CSSD AI Assistant")
 st.markdown(
     "Ask a question, explore a topic, or find answers in the shared knowledge library."
 )
+st.caption(
+    "Shared documents are visible to everyone. Relevant passages may be sent to OpenRouter."
+)
 
 st.sidebar.header("📚 Knowledge & documents")
-uploaded_files = st.sidebar.file_uploader(
-    "Upload for this session only (PDF, TXT, CSV, MD)",
-    accept_multiple_files=True,
-    type=["pdf", "txt", "csv", "md"],
-)
-uploaded_files = uploaded_files or []
-
-if uploaded_files:
-    st.sidebar.success(f"{len(uploaded_files)} file(s) selected for this session.")
-    for uploaded_file in uploaded_files:
-        st.sidebar.text(f"• {uploaded_file.name}")
-else:
-    st.sidebar.info(
-        "You can ask general questions or upload documents for document-grounded answers."
-    )
-
-st.sidebar.info(
-    "Questions and relevant document passages are sent to OpenRouter. "
-    "Saved shared documents can be used by everyone. This app uses a free model, "
-    "but free-tier limits and availability can vary. Avoid uploading sensitive documents."
-)
 
 supabase_config = get_supabase_config()
 edit_pin = read_secret("MEMORY_EDIT_PIN")
@@ -691,10 +618,6 @@ if supabase_config is None:
         "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
     )
 else:
-    st.sidebar.info(
-        "Approved corrections are shared with everyone. Only people with the "
-        "verification PIN can add or replace a topic."
-    )
     if shared_documents_error:
         st.sidebar.warning(
             f"Saved shared documents are unavailable: {shared_documents_error}"
@@ -702,11 +625,6 @@ else:
     elif shared_documents:
         st.sidebar.success(
             f"{len(shared_documents)} saved document(s) are available to everyone."
-        )
-    else:
-        st.sidebar.info(
-            "No shared documents are saved yet. Add them once to make them "
-            "available in future conversations."
         )
 
     with st.sidebar.expander("📚 Manage shared documents"):
@@ -720,7 +638,7 @@ else:
                 "before managing saved documents."
             )
         elif not edit_pin or len(edit_pin) < MIN_PIN_LENGTH:
-            st.info(
+            st.caption(
                 f"Set MEMORY_EDIT_PIN to a private passcode of at least "
                 f"{MIN_PIN_LENGTH} characters to manage shared documents."
             )
@@ -771,6 +689,7 @@ else:
                         )
                     else:
                         load_shared_documents.clear()
+                        build_shared_retrieval_index.clear()
                         st.success(
                             "Shared documents were saved. Re-uploading a file with "
                             "the same name replaces its saved version."
@@ -823,6 +742,7 @@ else:
                             )
                         else:
                             load_shared_documents.clear()
+                            build_shared_retrieval_index.clear()
                             st.success("The shared document was removed.")
                             st.rerun()
 
@@ -929,10 +849,16 @@ if question:
         )
         try:
             with st.spinner("Finding relevant passages and preparing your answer..."):
-                chunks = build_index(uploaded_files) if uploaded_files else []
-                chunks.extend(shared_document_chunks(shared_documents))
-                relevant_chunks = retrieve_chunks(question, chunks)
-                quick_response = use_quick_response(question, relevant_chunks)
+                document_versions = tuple(
+                    (document["document_id"], document["updated_at"])
+                    for document in shared_documents
+                )
+                relevant_chunks = retrieve_chunks(
+                    question,
+                    document_versions,
+                    tuple(shared_documents),
+                )
+                quick_response = use_quick_response(question)
                 shared_corrections = (
                     load_shared_corrections(
                         supabase_config.url,
@@ -986,4 +912,4 @@ if question:
                 f"(database response: {status_code}). No answer was sent."
             )
         except ValueError as error:
-            st.error(f"Could not use shared corrections: {error}")
+            st.error(f"Could not use shared documents or corrections: {error}")
