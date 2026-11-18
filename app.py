@@ -37,6 +37,7 @@ MIN_FEEDBACK_THEME_COUNT = 3
 MAX_PENDING_FEEDBACK_ITEMS = 50
 MAX_SHARED_MEMORY_ITEMS = 40
 MIN_PASSPHRASE_LENGTH = 16
+MAX_NOTIFICATIONS = 20
 SHARED_FEEDBACK_THEMES = (
     (
         "simpler, plain-language explanations",
@@ -112,6 +113,14 @@ def response_language_instructions(response_language: str) -> str:
         "\n\nRespond in English. End brief answers with: "
         "\"Ask me if you'd like an explanation.\""
     )
+
+
+def add_notification(message: str) -> None:
+    messages = st.session_state.setdefault("notifications", [])
+    if message not in messages:
+        messages.append(message)
+    if len(messages) > MAX_NOTIFICATIONS:
+        del messages[:-MAX_NOTIFICATIONS]
 
 
 class UploadedDocument(Protocol):
@@ -817,7 +826,7 @@ def render_answer_feedback(
     with st.sidebar.expander("📝 Give feedback", expanded=False):
         feedback_notice = st.session_state.pop("answer_feedback_notice", None)
         if feedback_notice:
-            st.success(feedback_notice)
+            add_notification(feedback_notice)
 
         answers = [
             (index, message)
@@ -1004,19 +1013,27 @@ if response_language == "Arabic":
         unsafe_allow_html=True,
     )
 
-st.title("CSSD AI Assistant")
+assistant_tab, notifications_tab = st.tabs(
+    ("المساعد", "الإشعارات")
+    if response_language == "Arabic"
+    else ("Assistant", "Notifications")
+)
+
+assistant_tab.title("CSSD AI Assistant")
 if response_language == "Arabic":
-    st.markdown("اطرح سؤالًا أو استكشف موضوعًا أو ابحث في مكتبة المعرفة المشتركة.")
-    st.caption(
+    assistant_tab.markdown(
+        "اطرح سؤالًا أو استكشف موضوعًا أو ابحث في مكتبة المعرفة المشتركة."
+    )
+    assistant_tab.caption(
         "المستندات المشتركة متاحة للجميع. قد تُرسل المقاطع ذات الصلة وملخصات "
         "التقييمات إلى OpenRouter. لا تُرسل المحادثات كاملة أو ملاحظات التقييم "
         "الخام إلى النموذج."
     )
 else:
-    st.markdown(
+    assistant_tab.markdown(
         "Ask a question, explore a topic, or find answers in the shared knowledge library."
     )
-    st.caption(
+    assistant_tab.caption(
         "Shared documents are visible to everyone. Relevant passages and aggregate "
         "feedback themes may be sent to OpenRouter. Full chats and raw feedback notes "
         "are not sent to the model."
@@ -1032,6 +1049,7 @@ supabase_config = get_supabase_config()
 edit_pin = read_secret("MEMORY_EDIT_PIN")
 shared_documents: list[dict[str, str]] = []
 shared_documents_error: str | None = None
+current_notifications: list[str] = []
 if supabase_config is not None:
     try:
         shared_documents = load_shared_documents(
@@ -1052,18 +1070,14 @@ if supabase_config is not None:
         shared_documents_error = str(error)
 
 if supabase_config is None:
-    st.sidebar.warning(
+    current_notifications.append(
         "Shared corrections and saved documents are not configured. Add "
         "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
     )
 else:
     if shared_documents_error:
-        st.sidebar.warning(
+        current_notifications.append(
             f"Saved shared documents are unavailable: {shared_documents_error}"
-        )
-    elif shared_documents:
-        st.sidebar.success(
-            f"{len(shared_documents)} saved document(s) are available to everyone."
         )
 
     with st.sidebar.expander("📚 Manage shared documents"):
@@ -1134,12 +1148,12 @@ else:
                             f"(database response: {status_code}). Nothing was changed."
                         )
                     else:
-                        load_shared_documents.clear()
-                        build_shared_retrieval_index.clear()
-                        st.success(
+                        add_notification(
                             "Shared documents were saved. Re-uploading a file with "
                             "the same name replaces its saved version."
                         )
+                        load_shared_documents.clear()
+                        build_shared_retrieval_index.clear()
                         st.rerun()
 
             if shared_documents:
@@ -1189,13 +1203,13 @@ else:
                                 f"(database response: {status_code})."
                             )
                         else:
+                            add_notification("The shared document was removed.")
                             load_shared_documents.clear()
                             build_shared_retrieval_index.clear()
-                            st.success("The shared document was removed.")
                             st.rerun()
 
     if not edit_pin or len(edit_pin) < MIN_PASSPHRASE_LENGTH:
-        st.sidebar.warning(
+        current_notifications.append(
             f"Set MEMORY_EDIT_PIN in Streamlit Secrets to a random passphrase of at "
             f"least {MIN_PASSPHRASE_LENGTH} characters to enable shared edits."
         )
@@ -1245,7 +1259,7 @@ else:
                         )
                     else:
                         load_shared_corrections.clear()
-                        st.success(
+                        add_notification(
                             "Passphrase accepted. The shared correction was saved and will "
                             "replace the previous entry for this topic."
                         )
@@ -1327,7 +1341,7 @@ else:
 
 api_key = get_api_key()
 if not api_key:
-    st.sidebar.warning(
+    current_notifications.append(
         "Add OPENROUTER_API_KEY in Streamlit app settings → Secrets to enable AI answers."
     )
 
@@ -1336,19 +1350,19 @@ if "chat_history" not in st.session_state:
 
 sources_label = "المصادر" if response_language == "Arabic" else "Sources"
 for message in st.session_state["chat_history"]:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    with assistant_tab.chat_message(message["role"]):
+        assistant_tab.markdown(message["content"])
         if message.get("sources"):
-            with st.expander(sources_label):
+            with assistant_tab.expander(sources_label):
                 for source in message.get("sources", []):
-                    st.markdown(f"- `{source}`")
+                    assistant_tab.markdown(f"- `{source}`")
 
-question = st.chat_input(
+question = assistant_tab.chat_input(
     "اسأل مساعد CSSD..." if response_language == "Arabic" else "Ask CSSD AI Assistant..."
 )
 if question:
-    with st.chat_message("user"):
-        st.markdown(question)
+    with assistant_tab.chat_message("user"):
+        assistant_tab.markdown(question)
 
     previous_history = st.session_state["chat_history"][-HISTORY_MESSAGE_COUNT:]
     st.session_state["chat_history"].append({"role": "user", "content": question})
@@ -1365,10 +1379,10 @@ if question:
         st.session_state["answer_feedback_message_choice"] = (
             len(st.session_state["chat_history"]) - 1
         )
-        with st.chat_message("assistant"):
-            st.markdown(answer)
+        with assistant_tab.chat_message("assistant"):
+            assistant_tab.markdown(answer)
     elif not api_key:
-        st.error(
+        assistant_tab.error(
             "AI answers are unavailable until OPENROUTER_API_KEY is configured in Streamlit Secrets."
         )
     else:
@@ -1381,7 +1395,9 @@ if question:
             },
         )
         try:
-            with st.spinner("Finding relevant passages and preparing your answer..."):
+            with assistant_tab.spinner(
+                "Finding relevant passages and preparing your answer..."
+            ):
                 document_versions = tuple(
                     (document["document_id"], document["updated_at"])
                     for document in shared_documents
@@ -1414,26 +1430,26 @@ if question:
                             else "unavailable"
                         )
                         if status_code == 404:
-                            st.sidebar.warning(
+                            current_notifications.append(
                                 "Shared feedback learning is unavailable. Create "
                                 "the assistant_feedback table using the README SQL."
                             )
                         else:
-                            st.sidebar.warning(
+                            current_notifications.append(
                                 "Shared feedback learning is unavailable "
                                 f"(database response: {status_code})."
                             )
                     except ValueError as error:
-                        st.sidebar.warning(
+                        current_notifications.append(
                             f"Shared feedback learning was skipped: {error}"
                         )
                 if supabase_config is None:
-                    st.warning(
+                    current_notifications.append(
                         "Shared corrections and saved documents are unavailable "
                         "until Supabase is configured."
                     )
                 elif shared_documents_error:
-                    st.warning(
+                    current_notifications.append(
                         "Saved shared documents could not be loaded. This answer "
                         "will use only available session uploads and corrections."
                     )
@@ -1449,7 +1465,7 @@ if question:
                 )
 
             if not answer:
-                st.error("The AI returned an empty answer. Please try again.")
+                assistant_tab.error("The AI returned an empty answer. Please try again.")
             else:
                 sources = list(dict.fromkeys(chunk.source for chunk in relevant_chunks))
                 st.session_state["chat_history"].append(
@@ -1458,25 +1474,52 @@ if question:
                 st.session_state["answer_feedback_message_choice"] = (
                     len(st.session_state["chat_history"]) - 1
                 )
-                with st.chat_message("assistant"):
-                    st.markdown(answer)
+                with assistant_tab.chat_message("assistant"):
+                    assistant_tab.markdown(answer)
                     if sources:
-                        with st.expander(sources_label):
+                        with assistant_tab.expander(sources_label):
                             for source in sources:
-                                st.markdown(f"- `{source}`")
+                                assistant_tab.markdown(f"- `{source}`")
         except OpenAIError as error:
-            st.error(f"OpenRouter request failed: {error}")
+            assistant_tab.error(f"OpenRouter request failed: {error}")
         except requests.RequestException as error:
             status_code = (
                 error.response.status_code
                 if error.response is not None
                 else "unavailable"
             )
-            st.error(
+            assistant_tab.error(
                 "Could not load shared data from Supabase "
                 f"(database response: {status_code}). No answer was sent."
             )
         except ValueError as error:
-            st.error(f"Could not use shared documents or corrections: {error}")
+            assistant_tab.error(f"Could not use shared documents or corrections: {error}")
 
 render_answer_feedback(supabase_config)
+
+with notifications_tab:
+    if response_language == "Arabic":
+        notifications_tab.subheader("الإشعارات")
+        clear_label = "مسح سجل الإشعارات"
+        empty_label = "لا توجد إشعارات حالية."
+    else:
+        notifications_tab.subheader("Notifications")
+        clear_label = "Clear notification history"
+        empty_label = "No current notifications."
+
+    notification_history = st.session_state.get("notifications", [])
+    if notification_history and notifications_tab.button(
+        clear_label,
+        key="clear_notifications",
+    ):
+        st.session_state["notifications"] = []
+        st.rerun()
+
+    displayed_notifications = list(
+        dict.fromkeys(current_notifications + list(reversed(notification_history)))
+    )
+    if displayed_notifications:
+        for notification in displayed_notifications:
+            notifications_tab.markdown(f"- {notification}")
+    else:
+        notifications_tab.caption(empty_label)

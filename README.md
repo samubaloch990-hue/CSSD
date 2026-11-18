@@ -1,6 +1,6 @@
 # CSSD AI Assistant
 
-CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from shared documents. It supports PDF, TXT, CSV, and Markdown files. Choose English or Arabic in the sidebar for assistant replies; Arabic replies use Modern Standard Arabic and right-to-left chat text. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex questions retain deeper reasoning.
+CSSD AI Assistant uses OpenRouter for answers and retrieves relevant passages from shared documents. It supports PDF, TXT, CSV, and Markdown files. Choose English or Arabic in the sidebar for assistant replies; Arabic replies use Modern Standard Arabic and right-to-left chat text. The **Assistant** and **Notifications** tabs separate chat from setup alerts and recent confirmations; notification history can be cleared there. Plain greetings are answered immediately; short, uncomplicated questions use a faster response setting, while complex questions retain deeper reasoning.
 
 ## Configure the API key
 
