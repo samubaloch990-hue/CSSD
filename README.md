@@ -10,9 +10,9 @@ Create an [OpenRouter API key](https://openrouter.ai/keys). In Streamlit Communi
 OPENROUTER_API_KEY = "your-api-key"
 ```
 
-Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions and relevant document passages are sent to OpenRouter; avoid submitting sensitive documents.
+Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions, relevant document passages, and aggregate feedback themes may be sent to OpenRouter; raw feedback notes and full chats are not.
 
-Conversation history is kept only for the active app session. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
+Conversation history is kept only for the active app session. The assistant is instructed to interpret typos, slang, fragments, and speech-to-text mistakes, and to ask for clarification when the intent is unclear. Shared feedback can influence future answers for everyone, but this is prompt-level adaptation, not training the underlying model; no full chats are saved for learning. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
 
 ## Shared document library
 
@@ -24,7 +24,7 @@ Streamlit Community Cloud installs Tesseract from `packages.txt`. For local use,
 
 The app can remember corrected facts for all users without saving full chat transcripts. Each topic has one saved correction; a new correction for the same topic replaces the previous one. The PIN authorizes a change but does not verify that the fact itself is true.
 
-Users can optionally rate answers and send a short suggestion from **Give feedback** in the sidebar. They can choose which answer to rate. Only the rating and suggestion are stored; the question and answer are not. Feedback is visible only after the owner enters the PIN and is never added to the assistant's knowledge automatically. Review a suggestion, then use **Correct shared knowledge** if it should become a shared correction.
+Users can optionally rate answers and send a short suggestion from **Give feedback** in the sidebar. They can choose which answer to rate. Only the rating and suggestion are stored; the question, answer, and user identity are not. From the latest 100 feedback submissions, the app starts applying recurring style themes (such as simpler wording or examples) after at least 10 submissions and when a theme appears at least 3 times. It sends only aggregate ratings and detected theme labels to OpenRouter, not raw suggestions or chat transcripts. The app has no accounts, so it cannot verify that feedback came from 10 different people. Suggestions do not automatically change factual knowledge; the owner can review them and use **Correct shared knowledge** for approved factual changes.
 
 1. Create a Supabase project and run this in its SQL Editor. This creates the shared document, correction memory, and feedback tables:
 
