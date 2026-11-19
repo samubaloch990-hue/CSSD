@@ -1409,76 +1409,25 @@ with st.sidebar.expander(
     "📚 إدارة ومشاركة المستندات" if response_language == "Arabic" else "📚 Manage shared documents",
     expanded=False,
 ):
-    if response_language == "Arabic":
-        st.caption(
-            "📱 رفع مؤقت من الجوال لهذه الجلسة: ارفع ملفات للسؤال عنها الآن دون حفظها في المكتبة المشتركة."
-        )
-    else:
-        st.caption(
-            "📱 Quick session upload (phone-friendly): Upload temporary files to ask questions about them in this session."
-        )
-    phone_uploads = st.file_uploader(
-        "📎 Tap to choose files" if response_language != "Arabic" else "📎 اضغط لاختيار الملفات",
-        accept_multiple_files=True,
-        type=["pdf", "txt", "csv", "md"],
-        key="phone_quick_upload",
-        label_visibility="visible",
-    )
-    if phone_uploads:
-        session_chunks: list[DocumentChunk] = st.session_state.get("session_chunks", [])
-        processed_files: set[str] = st.session_state.get("session_processed_files", set())
-        new_count = 0
-        for uploaded_file in phone_uploads:
-            if uploaded_file.name in processed_files:
-                continue
-            if uploaded_file.size > MAX_FILE_BYTES:
-                st.error(f"{uploaded_file.name} exceeds the 100 MB limit.")
-                continue
-            try:
-                content = extract_text(uploaded_file).strip()
-            except (PdfReadError, ValueError) as error:
-                st.error(f"{uploaded_file.name}: {error}")
-                continue
-            if not content:
-                st.warning(f"No text found in {uploaded_file.name}.")
-                continue
-            for source, text in split_into_chunks(content, uploaded_file.name):
-                session_chunks.append(DocumentChunk(source=f"Upload: {source}", text=text))
-            processed_files.add(uploaded_file.name)
-            new_count += 1
-        st.session_state["session_chunks"] = session_chunks
-        st.session_state["session_processed_files"] = processed_files
-        if new_count > 0:
-            st.success(
-                f"✅ {new_count} ملف(ات) مؤقتة جاهزة" if response_language == "Arabic"
-                else f"✅ {new_count} temporary file(s) ready to use"
-            )
-        if processed_files:
-            st.write(
-                "الملفات المؤقتة المحملة:" if response_language == "Arabic" else "Loaded session files:"
-            )
-            for fname in sorted(processed_files):
-                st.text(f"• {fname}")
-
-    st.markdown("---")
-
     st.caption(
-        "Everyone can ask questions about saved documents. Only people with "
-        "the six-digit PIN can add, replace, or remove them."
+        "Permanent library — saved for everyone. Enter your six-digit admin PIN "
+        "to add, replace, or remove shared documents."
     )
     if supabase_config is None:
-        st.info(
-            "Saved shared documents are not configured (Supabase is missing)."
+        st.warning(
+            "Permanent uploads are unavailable. Configure SUPABASE_URL and "
+            "SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
         )
     elif shared_documents_error:
         st.error(
-            "Create the assistant_documents table using the SQL in the README "
-            "before managing saved documents."
+            "Could not load the shared document library. Check the Supabase "
+            "configuration and database setup."
         )
+        st.caption(shared_documents_error)
     elif not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
-        st.caption(
-            "Set MEMORY_EDIT_PIN to an exactly six-digit PIN to manage "
-            "shared documents."
+        st.warning(
+            "Permanent uploads need MEMORY_EDIT_PIN set to exactly six digits "
+            "in Streamlit Secrets."
         )
     else:
         if shared_documents:
@@ -1590,6 +1539,68 @@ with st.sidebar.expander(
                         load_shared_documents.clear()
                         build_shared_retrieval_index.clear()
                         st.rerun()
+
+    st.markdown("---")
+    st.caption(
+        "رفع مؤقت من الجوال — الملفات متاحة خلال هذه الجلسة فقط ولا تُحفظ في "
+        "المكتبة المشتركة."
+        if response_language == "Arabic"
+        else "Temporary phone upload — files are only available during this "
+        "session and are not saved to the shared library."
+    )
+    phone_uploads = st.file_uploader(
+        "📎 اضغط لاختيار ملفات مؤقتة"
+        if response_language == "Arabic"
+        else "📎 Tap to choose temporary files",
+        accept_multiple_files=True,
+        type=["pdf", "txt", "csv", "md"],
+        key="phone_quick_upload",
+        label_visibility="visible",
+    )
+    if phone_uploads:
+        session_chunks: list[DocumentChunk] = st.session_state.get(
+            "session_chunks", []
+        )
+        processed_files: set[str] = st.session_state.get(
+            "session_processed_files", set()
+        )
+        new_count = 0
+        for uploaded_file in phone_uploads:
+            if uploaded_file.name in processed_files:
+                continue
+            if uploaded_file.size > MAX_FILE_BYTES:
+                st.error(f"{uploaded_file.name} exceeds the 100 MB limit.")
+                continue
+            try:
+                content = extract_text(uploaded_file).strip()
+            except (PdfReadError, ValueError) as error:
+                st.error(f"{uploaded_file.name}: {error}")
+                continue
+            if not content:
+                st.warning(f"No text found in {uploaded_file.name}.")
+                continue
+            for source, text in split_into_chunks(content, uploaded_file.name):
+                session_chunks.append(
+                    DocumentChunk(source=f"Upload: {source}", text=text)
+                )
+            processed_files.add(uploaded_file.name)
+            new_count += 1
+        st.session_state["session_chunks"] = session_chunks
+        st.session_state["session_processed_files"] = processed_files
+        if new_count > 0:
+            st.success(
+                f"{new_count} ملف(ات) مؤقتة جاهزة"
+                if response_language == "Arabic"
+                else f"{new_count} temporary file(s) ready to use"
+            )
+        if processed_files:
+            st.write(
+                "الملفات المؤقتة المحملة:"
+                if response_language == "Arabic"
+                else "Loaded session files:"
+            )
+            for fname in sorted(processed_files):
+                st.text(f"• {fname}")
 
     if not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
         current_notifications.append(
