@@ -1374,11 +1374,12 @@ DARK_CSS = """
         width: min(828px, calc(100vw - 340px));
     }
     [data-testid="stChatInput"] textarea {
-        background: transparent;
-        color: #e2e8f0;
+        background: #ffffff;
+        color: #14213d;
+        caret-color: #14213d;
     }
     [data-testid="stChatInput"] textarea::placeholder {
-        color: #8895ad;
+        color: #52657b;
         opacity: 1;
     }
     [data-testid="stChatInput"]:focus-within {
