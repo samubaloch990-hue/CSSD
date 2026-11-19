@@ -1237,18 +1237,40 @@ DARK_CSS = """
         box-shadow: 0 0 0 3px rgba(91, 138, 243, 0.2);
     }
     [data-testid="stSidebar"] [data-testid="stExpander"] {
-        border: 1px solid #2d3348;
-        border-radius: 14px;
-        background: #1a1d27;
+        border: 1px solid #2d3348 !important;
+        border-radius: 14px !important;
+        background: #1a1d27 !important;
+        color: #e2e8f0 !important;
     }
-    [data-testid="stSidebar"] [data-testid="stFileUploader"] {
-        border-radius: 14px;
-        background: #1e2233;
-        padding: 0.5rem;
+    [data-testid="stExpander"] {
+        border: 1px solid #2d3348 !important;
+        border-radius: 14px !important;
+        background: #1a1d27 !important;
+        color: #e2e8f0 !important;
     }
-    [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
-        padding: 1rem 0.5rem;
-        min-height: 100px;
+    [data-testid="stFileUploader"] {
+        border-radius: 14px !important;
+        background: #1e2233 !important;
+        border: 1px dashed #3d4560 !important;
+        padding: 0.75rem !important;
+    }
+    [data-testid="stFileUploader"] section {
+        background: #1e2233 !important;
+        border: none !important;
+    }
+    [data-testid="stFileUploader"] div, [data-testid="stFileUploader"] span, [data-testid="stFileUploader"] small, [data-testid="stFileUploader"] p {
+        color: #c8d1e0 !important;
+    }
+    .stTextInput input, .stTextArea textarea, .stSelectbox select, div[data-baseweb="select"] > div {
+        background-color: #1e2233 !important;
+        color: #e2e8f0 !important;
+        border-color: #3d4560 !important;
+    }
+    .stForm {
+        background: #1a1d27 !important;
+        border: 1px solid #2d3348 !important;
+        border-radius: 14px !important;
+        padding: 1rem !important;
     }
     [data-testid="stSidebar"] .stSelectbox label,
     [data-testid="stSidebar"] .stTextInput label,
