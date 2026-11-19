@@ -28,7 +28,11 @@ The app can remember corrected facts for all users without saving full chat tran
 
 Users can optionally rate answers and send a short suggestion from **Give feedback** in the sidebar. They can choose which answer to rate. Only the rating and suggestion are stored; the question, answer, and user identity are not. From the latest 100 feedback submissions, the app starts applying recurring style themes (such as simpler wording or examples) after at least 10 submissions and when a theme appears at least 3 times. It sends only aggregate ratings and detected theme labels to OpenRouter, not raw suggestions or chat transcripts. The app has no accounts, so it cannot verify that feedback came from 10 different people. Suggestions do not automatically change factual knowledge; the owner can review them and use **Correct shared knowledge** for approved factual changes.
 
-1. Create a Supabase project and run this in its SQL Editor. This creates the shared document, correction memory, feedback, and PIN rate-limit tables/functions:
+### One-time setup for permanent documents and PIN protection
+
+Permanent uploads and other shared admin changes need Supabase. Complete these steps once:
+
+1. In your Supabase project, open **SQL Editor → New query**. Copy the entire SQL block below, paste it into the editor, and click **Run**. This creates the tables and server-side PIN rate limiter the app needs. Do not skip this step: without it, PIN verification fails safely and permanent changes cannot be saved.
 
    ```sql
    create table if not exists public.assistant_memory (
@@ -159,9 +163,9 @@ Users can optionally rate answers and send a short suggestion from **Give feedba
    grant execute on function public.reset_admin_pin_attempts() to service_role;
    ```
 
-   PIN verification allows five failed attempts per hour across the whole app. Reaching the limit locks shared-edit actions for one hour for everyone; a correct PIN resets the counter.
+   The rate limit is shared by the whole app (not per person): after five incorrect PIN attempts within an hour, shared admin actions are locked for everyone for up to one hour. Entering the correct PIN resets the counter. This only affects shared admin actions; it does not stop regular questions or temporary uploads.
 
-2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add the Supabase project URL, private service-role key, and a six-digit numeric PIN:
+2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets**. Add your Supabase project URL, its private service-role key, and choose a six-digit numeric PIN. Use the same PIN when the app asks you to verify an admin change:
 
    ```toml
    SUPABASE_URL = "https://your-project.supabase.co"
@@ -171,4 +175,4 @@ Users can optionally rate answers and send a short suggestion from **Give feedba
 
    Keep these values private. Do not commit them to GitHub or paste them into chat.
 
-3. In the app sidebar, use **Manage shared documents** to add documents once. Use **Correct shared knowledge** to submit a topic and its corrected fact. An incorrect PIN makes no database change. Use **Review user feedback** to review suggestions; marking feedback reviewed does not automatically change assistant knowledge. Only trusted people should know the PIN because saved documents and approved corrections are shared with all app users.
+3. Save the secrets and let the app restart. In the app, open **Manage shared documents**, choose **Add or replace shared documents**, enter the six-digit PIN, then select **Save for everyone**. The first upload is stored in the shared library for everyone. Use **Correct shared knowledge** for shared corrections and **Review user feedback** to review suggestions. An incorrect PIN does not change anything. Only trusted people should know the PIN because saved documents and approved corrections are shared with all app users.
