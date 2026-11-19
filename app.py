@@ -1046,7 +1046,7 @@ st.set_page_config(
 )
 
 if "theme_mode" not in st.session_state:
-    st.session_state["theme_mode"] = "Light"
+    st.session_state["theme_mode"] = "Dark"
 
 LIGHT_CSS = """
     [data-testid="stAppViewContainer"] {
@@ -1371,19 +1371,51 @@ st.sidebar.header(
     else "📚 Knowledge & documents"
 )
 
+supabase_config = get_supabase_config()
+edit_pin = read_secret("MEMORY_EDIT_PIN")
+shared_documents: list[dict[str, str]] = []
+shared_documents_error: str | None = None
+current_notifications: list[str] = []
+if supabase_config is not None:
+    try:
+        shared_documents = load_shared_documents(
+            supabase_config.url,
+            supabase_config.service_role_key,
+        )
+    except requests.RequestException as error:
+        status_code = (
+            error.response.status_code
+            if error.response is not None
+            else "unavailable"
+        )
+        shared_documents_error = (
+            f"Supabase response: {status_code}. Check that the "
+            "assistant_documents table has been created."
+        )
+    except ValueError as error:
+        shared_documents_error = str(error)
+
+if supabase_config is None:
+    current_notifications.append(
+        "Shared corrections and saved documents are not configured. Add "
+        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
+    )
+elif shared_documents_error:
+    current_notifications.append(
+        f"Saved shared documents are unavailable: {shared_documents_error}"
+    )
+
 with st.sidebar.expander(
-    "📱 رفع سريع من الجوال" if response_language == "Arabic" else "📱 Quick upload from phone",
+    "📚 إدارة ومشاركة المستندات" if response_language == "Arabic" else "📚 Manage shared documents",
     expanded=False,
 ):
     if response_language == "Arabic":
         st.caption(
-            "ارفع ملفات من جوالك للسؤال عنها في هذه الجلسة. "
-            "هذه الملفات مؤقتة ولن تُحفظ في المكتبة المشتركة."
+            "📱 رفع مؤقت من الجوال لهذه الجلسة: ارفع ملفات للسؤال عنها الآن دون حفظها في المكتبة المشتركة."
         )
     else:
         st.caption(
-            "Upload files from your phone to ask questions about them in this session. "
-            "These files are temporary and won't be saved to the shared library."
+            "📱 Quick session upload (phone-friendly): Upload temporary files to ask questions about them in this session."
         )
     phone_uploads = st.file_uploader(
         "📎 Tap to choose files" if response_language != "Arabic" else "📎 اضغط لاختيار الملفات",
@@ -1418,105 +1450,129 @@ with st.sidebar.expander(
         st.session_state["session_processed_files"] = processed_files
         if new_count > 0:
             st.success(
-                f"✅ {new_count} ملف(ات) جاهزة" if response_language == "Arabic"
-                else f"✅ {new_count} file(s) ready to use"
+                f"✅ {new_count} ملف(ات) مؤقتة جاهزة" if response_language == "Arabic"
+                else f"✅ {new_count} temporary file(s) ready to use"
             )
         if processed_files:
             st.write(
-                "الملفات المحملة:" if response_language == "Arabic" else "Loaded files:"
+                "الملفات المؤقتة المحملة:" if response_language == "Arabic" else "Loaded session files:"
             )
             for fname in sorted(processed_files):
                 st.text(f"• {fname}")
 
-supabase_config = get_supabase_config()
-edit_pin = read_secret("MEMORY_EDIT_PIN")
-shared_documents: list[dict[str, str]] = []
-shared_documents_error: str | None = None
-current_notifications: list[str] = []
-if supabase_config is not None:
-    try:
-        shared_documents = load_shared_documents(
-            supabase_config.url,
-            supabase_config.service_role_key,
-        )
-    except requests.RequestException as error:
-        status_code = (
-            error.response.status_code
-            if error.response is not None
-            else "unavailable"
-        )
-        shared_documents_error = (
-            f"Supabase response: {status_code}. Check that the "
-            "assistant_documents table has been created."
-        )
-    except ValueError as error:
-        shared_documents_error = str(error)
+    st.markdown("---")
 
-if supabase_config is None:
-    current_notifications.append(
-        "Shared corrections and saved documents are not configured. Add "
-        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
+    st.caption(
+        "Everyone can ask questions about saved documents. Only people with "
+        "the six-digit PIN can add, replace, or remove them."
     )
-else:
-    if shared_documents_error:
-        current_notifications.append(
-            f"Saved shared documents are unavailable: {shared_documents_error}"
+    if supabase_config is None:
+        st.info(
+            "Saved shared documents are not configured (Supabase is missing)."
         )
-
-    with st.sidebar.expander("📚 Manage shared documents"):
+    elif shared_documents_error:
+        st.error(
+            "Create the assistant_documents table using the SQL in the README "
+            "before managing saved documents."
+        )
+    elif not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
         st.caption(
-            "Everyone can ask questions about saved documents. Only people with "
-            "the six-digit PIN can add, replace, or remove them."
+            "Set MEMORY_EDIT_PIN to an exactly six-digit PIN to manage "
+            "shared documents."
         )
-        if shared_documents_error:
-            st.error(
-                "Create the assistant_documents table using the SQL in the README "
-                "before managing saved documents."
-            )
-        elif not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
-            st.caption(
-                "Set MEMORY_EDIT_PIN to an exactly six-digit PIN to manage "
-                "shared documents."
-            )
-        else:
-            if shared_documents:
-                st.write("Saved documents:")
-                for document in shared_documents:
-                    st.text(f"• {document['file_name']}")
+    else:
+        if shared_documents:
+            st.write("Saved documents:")
+            for document in shared_documents:
+                st.text(f"• {document['file_name']}")
 
-            st.caption(
-                "Scanned English PDFs are read with free on-server OCR. Large files "
-                "may take a few minutes to process."
+        st.caption(
+            "Scanned English PDFs are read with free on-server OCR. Large files "
+            "may take a few minutes to process."
+        )
+        with st.form("shared_documents_upload_form"):
+            new_shared_files = st.file_uploader(
+                "Add or replace shared documents (PDF, TXT, CSV, MD)",
+                accept_multiple_files=True,
+                type=["pdf", "txt", "csv", "md"],
+                key="shared_documents_uploader",
             )
-            with st.form("shared_documents_upload_form"):
-                new_shared_files = st.file_uploader(
-                    "Add or replace shared documents (PDF, TXT, CSV, MD)",
-                    accept_multiple_files=True,
-                    type=["pdf", "txt", "csv", "md"],
-                    key="shared_documents_uploader",
+            upload_pin = st.text_input(
+                "6-digit PIN",
+                type="password",
+                max_chars=6,
+                key="shared_documents_upload_pin",
+            )
+            upload_submitted = st.form_submit_button("Save for everyone")
+
+        if upload_submitted:
+            if check_admin_pin(
+                supabase_config,
+                edit_pin,
+                upload_pin,
+                "PIN is incorrect. No shared documents were changed.",
+            ):
+                try:
+                    with st.spinner("Extracting text from uploaded documents..."):
+                        documents_to_save = prepare_shared_documents(
+                            new_shared_files or [],
+                            shared_documents,
+                        )
+                    save_shared_documents(supabase_config, documents_to_save)
+                except ValueError as error:
+                    st.error(str(error))
+                except requests.RequestException as error:
+                    status_code = (
+                        error.response.status_code
+                        if error.response is not None
+                        else "unavailable"
+                    )
+                    st.error(
+                        "Could not save shared documents "
+                        f"(database response: {status_code}). Nothing was changed."
+                    )
+                else:
+                    add_notification(
+                        "Shared documents were saved. Re-uploading a file with "
+                        "the same name replaces its saved version."
+                    )
+                    load_shared_documents.clear()
+                    build_shared_retrieval_index.clear()
+                    st.rerun()
+
+        if shared_documents:
+            with st.form("shared_document_delete_form"):
+                selected_document_id = st.selectbox(
+                    "Remove a saved document",
+                    options=[
+                        document["document_id"] for document in shared_documents
+                    ],
+                    format_func=lambda document_id: next(
+                        document["file_name"]
+                        for document in shared_documents
+                        if document["document_id"] == document_id
+                    ),
                 )
-                upload_pin = st.text_input(
+                delete_pin = st.text_input(
                     "6-digit PIN",
                     type="password",
                     max_chars=6,
-                    key="shared_documents_upload_pin",
+                    key="shared_document_delete_pin",
                 )
-                upload_submitted = st.form_submit_button("Save for everyone")
+                delete_submitted = st.form_submit_button("Remove document")
 
-            if upload_submitted:
+            if delete_submitted:
                 if check_admin_pin(
                     supabase_config,
                     edit_pin,
-                    upload_pin,
-                    "PIN is incorrect. No shared documents were changed.",
+                    delete_pin,
+                    "PIN is incorrect. No shared document was removed.",
                 ):
                     try:
-                        with st.spinner("Extracting text from uploaded documents..."):
-                            documents_to_save = prepare_shared_documents(
-                                new_shared_files or [],
-                                shared_documents,
-                            )
-                        save_shared_documents(supabase_config, documents_to_save)
+                        delete_shared_document(
+                            supabase_config,
+                            selected_document_id,
+                        )
                     except ValueError as error:
                         st.error(str(error))
                     except requests.RequestException as error:
@@ -1526,68 +1582,14 @@ else:
                             else "unavailable"
                         )
                         st.error(
-                            "Could not save shared documents "
-                            f"(database response: {status_code}). Nothing was changed."
+                            "Could not remove the shared document "
+                            f"(database response: {status_code})."
                         )
                     else:
-                        add_notification(
-                            "Shared documents were saved. Re-uploading a file with "
-                            "the same name replaces its saved version."
-                        )
+                        add_notification("The shared document was removed.")
                         load_shared_documents.clear()
                         build_shared_retrieval_index.clear()
                         st.rerun()
-
-            if shared_documents:
-                with st.form("shared_document_delete_form"):
-                    selected_document_id = st.selectbox(
-                        "Remove a saved document",
-                        options=[
-                            document["document_id"] for document in shared_documents
-                        ],
-                        format_func=lambda document_id: next(
-                            document["file_name"]
-                            for document in shared_documents
-                            if document["document_id"] == document_id
-                        ),
-                    )
-                    delete_pin = st.text_input(
-                        "6-digit PIN",
-                        type="password",
-                        max_chars=6,
-                        key="shared_document_delete_pin",
-                    )
-                    delete_submitted = st.form_submit_button("Remove document")
-
-                if delete_submitted:
-                    if check_admin_pin(
-                        supabase_config,
-                        edit_pin,
-                        delete_pin,
-                        "PIN is incorrect. No shared document was removed.",
-                    ):
-                        try:
-                            delete_shared_document(
-                                supabase_config,
-                                selected_document_id,
-                            )
-                        except ValueError as error:
-                            st.error(str(error))
-                        except requests.RequestException as error:
-                            status_code = (
-                                error.response.status_code
-                                if error.response is not None
-                                else "unavailable"
-                            )
-                            st.error(
-                                "Could not remove the shared document "
-                                f"(database response: {status_code})."
-                            )
-                        else:
-                            add_notification("The shared document was removed.")
-                            load_shared_documents.clear()
-                            build_shared_retrieval_index.clear()
-                            st.rerun()
 
     if not edit_pin or PIN_PATTERN.fullmatch(edit_pin) is None:
         current_notifications.append(
