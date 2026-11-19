@@ -17,7 +17,7 @@ from functools import wraps
 import pypdfium2 as pdfium
 import requests
 import streamlit as st
-from openai import OpenAI, OpenAIError
+from openai import OpenAI, OpenAIError, RateLimitError
 from PyPDF2 import PdfReader
 from PyPDF2.errors import PdfReadError
 
@@ -28,7 +28,14 @@ logging.basicConfig(
 logger = logging.getLogger("cssd_assistant")
 
 MODEL = os.getenv("MODEL", "inclusionai/ling-3.2-flash:free")
-FALLBACK_MODELS = [m.strip() for m in os.getenv("FALLBACK_MODELS", "").split(",") if m.strip()]
+FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv(
+        "FALLBACK_MODELS",
+        "google/gemma-4-31b-it:free,google/gemma-4-26b-a4b-it:free",
+    ).split(",")
+    if m.strip()
+]
 if any(not model.endswith(":free") for model in [MODEL, *FALLBACK_MODELS]):
     raise ValueError("MODEL and FALLBACK_MODELS must use free OpenRouter models ending in :free.")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -1079,8 +1086,8 @@ def answer_question(
                     timeout=30.0,
                 )
             return response.output_text.strip()
-        except OpenAIError as error:
-            logger.warning("Model %s failed: %s. Trying fallback...", m, error)
+        except RateLimitError as error:
+            logger.warning("Model %s is rate limited; trying the next free model.", m)
             last_error = error
     if last_error:
         raise last_error
@@ -2041,6 +2048,14 @@ if question:
                     sources_expander = answer_message.expander(sources_label)
                     for source in sources:
                         sources_expander.markdown(f"- `{source}`")
+        except RateLimitError:
+            assistant_tab.error(
+                "نماذج الذكاء الاصطناعي المجانية مشغولة أو تم تجاوز حد الطلبات. "
+                "يرجى المحاولة لاحقًا."
+                if response_language == "Arabic"
+                else "Free AI models are busy or the request limit has been reached. "
+                "Please try again later."
+            )
         except OpenAIError as error:
             assistant_tab.error(f"OpenRouter request failed: {error}")
         except requests.RequestException as error:
