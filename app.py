@@ -92,8 +92,27 @@ COMPLEX_QUESTION_PATTERN = re.compile(
     r"step by step|why)\b",
     re.IGNORECASE,
 )
+EXPLAIN_PREVIOUS_PATTERN = re.compile(
+    r"^\s*(?:explain(?:\s+(?:that|this|it|more|further|again|please|pls))?"
+    r"|what do you mean|can you (?:elaborate|clarify|explain)"
+    r"|more (?:details?|explanation|info(?:rmation)?)"
+    r"|elaborate(?:\s+(?:on that|more|please|pls))?"
+    r"|clarify(?:\s+(?:that|this|it|please|pls))?"
+    r"|tell me more"
+    r"|go (?:deeper|on)"
+    r"|i (?:don'?t|dont) (?:understand|get it)"
+    r"|what does (?:that|this) mean"
+    r"|اشرح(?:\s+(?:أكثر|ذلك|هذا))?"
+    r"|وضّح(?:\s+(?:أكثر|ذلك|هذا))?"
+    r"|ما (?:المقصود|معنى)"
+    r"|لم أفهم"
+    r")\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
 
 SYSTEM_INSTRUCTIONS = """You are a thoughtful, accurate assistant. By default, answer briefly in simple language and include only the information needed to answer the user's question. Do not start with labels such as "Direct answer" or add a long explanation, background, or examples unless they are necessary or requested. If the user asks for an explanation, provide one. End brief answers with a short offer to explain in the selected response language.
+
+When the user asks you to "explain", "elaborate", "clarify", says "I don't understand", "tell me more", "what do you mean", or any similar follow-up without specifying a new topic, they are asking about YOUR PREVIOUS ANSWER in this conversation. Re-read your last response and explain it more clearly, in simpler terms, with examples if helpful. Do not ask what they want explained — they want the previous answer explained. If there is no previous answer, ask what they would like to know.
 
 Interpret informal, misspelled, abbreviated, fragmentary, or speech-transcribed input using the conversation context. Do not criticize the user's wording. If the likely intent is clear, answer it. If multiple plausible interpretations would materially change the answer, ask one concise clarifying question instead of guessing. If random text has no clear request, ask what the user wants to know rather than inventing a question. Do not silently change the user's meaning.
 
@@ -144,6 +163,10 @@ class SupabaseConfig:
 
 def is_greeting(question: str) -> bool:
     return bool(GREETING_PATTERN.fullmatch(question.strip()))
+
+
+def is_explain_previous(question: str) -> bool:
+    return bool(EXPLAIN_PREVIOUS_PATTERN.match(question.strip()))
 
 
 def use_quick_response(question: str) -> bool:
@@ -843,12 +866,27 @@ def answer_question(
     quick_response: bool = False,
     shared_feedback_guidance: str = "",
     response_language: str = "English",
+    explaining_previous: bool = False,
 ) -> str:
     passages = "\n\n".join(
         f"[Source: {chunk.source}]\n{chunk.text}" for chunk in relevant_chunks
     )
     current_input = question
-    if passages:
+    if explaining_previous and history:
+        last_assistant = None
+        for msg in reversed(history):
+            if msg["role"] == "assistant":
+                last_assistant = msg["content"]
+                break
+        if last_assistant:
+            current_input = (
+                f"The user is asking you to explain your previous answer more clearly. "
+                f"Here is your previous answer:\n\n---\n{last_assistant}\n---\n\n"
+                f"User's request: {question}\n\n"
+                f"Explain this answer in simpler, clearer terms. Use examples if it "
+                f"helps. Do not ask what they want explained."
+            )
+    elif passages:
         current_input = f"Question:\n{question}\n\nRelevant document passages:\n{passages}"
 
     api_history = [
@@ -880,7 +918,7 @@ def answer_question(
         *api_history,
         {"role": "user", "content": current_input},
     ]
-    if quick_response:
+    if quick_response and not explaining_previous:
         response = client.responses.create(
             model=MODEL,
             instructions=instructions,
@@ -1007,9 +1045,10 @@ st.set_page_config(
     layout="centered",
 )
 
-st.markdown(
-    """
-    <style>
+if "theme_mode" not in st.session_state:
+    st.session_state["theme_mode"] = "Light"
+
+LIGHT_CSS = """
     [data-testid="stAppViewContainer"] {
         background:
             radial-gradient(ellipse at 50% 0%, rgba(219, 234, 254, 0.55), transparent 44%),
@@ -1092,6 +1131,11 @@ st.markdown(
     [data-testid="stSidebar"] [data-testid="stFileUploader"] {
         border-radius: 14px;
         background: #f8fafc;
+        padding: 0.5rem;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+        padding: 1rem 0.5rem;
+        min-height: 100px;
     }
     @media (max-width: 640px) {
         .block-container {
@@ -1109,10 +1153,148 @@ st.markdown(
             font-size: 1.9rem !important;
         }
     }
-    </style>
-    """,
-    unsafe_allow_html=True,
+"""
+
+DARK_CSS = """
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(ellipse at 50% 0%, rgba(30, 58, 95, 0.45), transparent 44%),
+            #0f1117;
+        color: #e2e8f0;
+    }
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+    [data-testid="stSidebar"] {
+        background: #1a1d27;
+        border-right: 1px solid #2d3348;
+        color: #e2e8f0;
+    }
+    .block-container {
+        max-width: 860px;
+        padding-top: 3rem;
+        padding-bottom: 8rem;
+    }
+    h1 {
+        color: #e2e8f0;
+        font-size: 2.35rem !important;
+        font-weight: 750 !important;
+        letter-spacing: -0.045em;
+    }
+    h2, h3, h4, h5, h6, p, span, label, .stMarkdown, .stText {
+        color: #e2e8f0 !important;
+    }
+    [data-testid="stChatMessage"] {
+        padding: 1rem 1.15rem;
+        border: 1px solid #2d3348;
+        border-radius: 18px;
+        background: rgba(26, 29, 39, 0.92);
+        box-shadow: 0 5px 18px rgba(0, 0, 0, 0.15);
+        color: #e2e8f0;
+    }
+    [data-testid="stChatMessage"]:has(
+        [data-testid="stChatMessageContent"][aria-label="Chat message from user"]
+    ) {
+        border: 1px solid #2a3f6b;
+        border-left: 4px solid #5b7fbd;
+        background: #1a2744;
+    }
+    [data-testid="stChatMessage"]:has(
+        [data-testid="stChatMessageContent"][aria-label="Chat message from assistant"]
+    ) {
+        border: 1px solid #2a4d3a;
+        border-left: 4px solid #4f8d72;
+        background: #1a2f24;
+    }
+    [data-testid="stChatInput"] {
+        position: fixed;
+        left: 50%;
+        bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+        z-index: 1000;
+        width: min(828px, calc(100vw - 2rem));
+        transform: translateX(-50%);
+        border: 1px solid #3d4560;
+        border-radius: 16px;
+        background: #1e2233;
+        box-shadow: 0 8px 26px rgba(0, 0, 0, 0.2);
+    }
+    [data-testid="stAppViewContainer"]:has(
+        [data-testid="stSidebar"][data-collapsed="false"]
+    ) [data-testid="stChatInput"] {
+        left: calc(50% + 150px);
+        width: min(828px, calc(100vw - 340px));
+    }
+    [data-testid="stChatInput"] textarea {
+        background: transparent;
+        color: #e2e8f0;
+    }
+    [data-testid="stChatInput"] textarea::placeholder {
+        color: #8895ad;
+        opacity: 1;
+    }
+    [data-testid="stChatInput"]:focus-within {
+        border-color: #5b8af3;
+        box-shadow: 0 0 0 3px rgba(91, 138, 243, 0.2);
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] {
+        border: 1px solid #2d3348;
+        border-radius: 14px;
+        background: #1a1d27;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] {
+        border-radius: 14px;
+        background: #1e2233;
+        padding: 0.5rem;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+        padding: 1rem 0.5rem;
+        min-height: 100px;
+    }
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stTextInput label,
+    [data-testid="stSidebar"] .stTextArea label,
+    [data-testid="stSidebar"] .stFileUploader label {
+        color: #c8d1e0 !important;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        background: transparent;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #8895ad;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #e2e8f0;
+    }
+    @media (max-width: 640px) {
+        .block-container {
+            padding: 1.5rem 1rem 7rem;
+        }
+        [data-testid="stChatInput"],
+        [data-testid="stAppViewContainer"]:has(
+            [data-testid="stSidebar"][data-collapsed="false"]
+        ) [data-testid="stChatInput"] {
+            left: 1rem;
+            width: calc(100vw - 2rem);
+            transform: none;
+        }
+        h1 {
+            font-size: 1.9rem !important;
+        }
+    }
+"""
+
+theme_css = DARK_CSS if st.session_state["theme_mode"] == "Dark" else LIGHT_CSS
+st.markdown(f"<style>{theme_css}</style>", unsafe_allow_html=True)
+
+theme_mode = st.sidebar.toggle(
+    "🌙 Dark mode",
+    value=st.session_state["theme_mode"] == "Dark",
+    key="theme_toggle",
 )
+new_theme = "Dark" if theme_mode else "Light"
+if new_theme != st.session_state["theme_mode"]:
+    st.session_state["theme_mode"] = new_theme
+    st.rerun()
 
 response_language = st.sidebar.selectbox(
     "Answer language / لغة الإجابة",
@@ -1166,6 +1348,63 @@ st.sidebar.header(
     if response_language == "Arabic"
     else "📚 Knowledge & documents"
 )
+
+with st.sidebar.expander(
+    "📱 رفع سريع من الجوال" if response_language == "Arabic" else "📱 Quick upload from phone",
+    expanded=False,
+):
+    if response_language == "Arabic":
+        st.caption(
+            "ارفع ملفات من جوالك للسؤال عنها في هذه الجلسة. "
+            "هذه الملفات مؤقتة ولن تُحفظ في المكتبة المشتركة."
+        )
+    else:
+        st.caption(
+            "Upload files from your phone to ask questions about them in this session. "
+            "These files are temporary and won't be saved to the shared library."
+        )
+    phone_uploads = st.file_uploader(
+        "📎 Tap to choose files" if response_language != "Arabic" else "📎 اضغط لاختيار الملفات",
+        accept_multiple_files=True,
+        type=["pdf", "txt", "csv", "md"],
+        key="phone_quick_upload",
+        label_visibility="visible",
+    )
+    if phone_uploads:
+        session_chunks: list[DocumentChunk] = st.session_state.get("session_chunks", [])
+        processed_files: set[str] = st.session_state.get("session_processed_files", set())
+        new_count = 0
+        for uploaded_file in phone_uploads:
+            if uploaded_file.name in processed_files:
+                continue
+            if uploaded_file.size > MAX_FILE_BYTES:
+                st.error(f"{uploaded_file.name} exceeds the 100 MB limit.")
+                continue
+            try:
+                content = extract_text(uploaded_file).strip()
+            except (PdfReadError, ValueError) as error:
+                st.error(f"{uploaded_file.name}: {error}")
+                continue
+            if not content:
+                st.warning(f"No text found in {uploaded_file.name}.")
+                continue
+            for source, text in split_into_chunks(content, uploaded_file.name):
+                session_chunks.append(DocumentChunk(source=f"Upload: {source}", text=text))
+            processed_files.add(uploaded_file.name)
+            new_count += 1
+        st.session_state["session_chunks"] = session_chunks
+        st.session_state["session_processed_files"] = processed_files
+        if new_count > 0:
+            st.success(
+                f"✅ {new_count} ملف(ات) جاهزة" if response_language == "Arabic"
+                else f"✅ {new_count} file(s) ready to use"
+            )
+        if processed_files:
+            st.write(
+                "الملفات المحملة:" if response_language == "Arabic" else "Loaded files:"
+            )
+            for fname in sorted(processed_files):
+                st.text(f"• {fname}")
 
 supabase_config = get_supabase_config()
 edit_pin = read_secret("MEMORY_EDIT_PIN")
@@ -1528,7 +1767,18 @@ if question:
                     document_versions,
                     tuple(shared_documents),
                 )
-                quick_response = use_quick_response(question)
+                session_chunks: list[DocumentChunk] = st.session_state.get(
+                    "session_chunks", []
+                )
+                if session_chunks:
+                    query_terms = set(TOKEN_PATTERN.findall(question.lower()))
+                    for chunk in session_chunks:
+                        chunk_terms = set(TOKEN_PATTERN.findall(chunk.text.lower()))
+                        if query_terms & chunk_terms:
+                            relevant_chunks.append(chunk)
+                    relevant_chunks = relevant_chunks[:RETRIEVAL_COUNT + 4]
+                explaining_previous = is_explain_previous(question)
+                quick_response = use_quick_response(question) and not explaining_previous
                 shared_corrections = (
                     load_shared_corrections(
                         supabase_config.url,
@@ -1583,6 +1833,7 @@ if question:
                     quick_response=quick_response,
                     shared_feedback_guidance=shared_feedback_guidance,
                     response_language=response_language,
+                    explaining_previous=explaining_previous,
                 )
 
             if not answer:
