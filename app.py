@@ -5,10 +5,14 @@ import math
 import os
 import re
 import subprocess
+import logging
+import time
+import shutil
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
+from functools import wraps
 
 import pypdfium2 as pdfium
 import requests
@@ -17,14 +21,26 @@ from openai import OpenAI, OpenAIError
 from PyPDF2 import PdfReader
 from PyPDF2.errors import PdfReadError
 
-MODEL = "inclusionai/ling-3.2-flash:free"
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("cssd_assistant")
+
+MODEL = os.getenv("MODEL", "inclusionai/ling-3.2-flash:free")
+FALLBACK_MODELS = [m.strip() for m in os.getenv("FALLBACK_MODELS", "").split(",") if m.strip()]
+if any(not model.endswith(":free") for model in [MODEL, *FALLBACK_MODELS]):
+    raise ValueError("MODEL and FALLBACK_MODELS must use free OpenRouter models ending in :free.")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-MAX_FILES = 10
-MAX_FILE_BYTES = 100 * 1024 * 1024
-CHUNK_WORDS = 220
-CHUNK_OVERLAP_WORDS = 40
-RETRIEVAL_COUNT = 6
+MAX_FILES = int(os.getenv("MAX_FILES", "10"))
+MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", "104857600"))
+CHUNK_WORDS = int(os.getenv("CHUNK_WORDS", "220"))
+CHUNK_OVERLAP_WORDS = int(os.getenv("CHUNK_OVERLAP_WORDS", "40"))
+RETRIEVAL_COUNT = int(os.getenv("RETRIEVAL_COUNT", "6"))
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "100"))
+OCR_SCALE = float(os.getenv("OCR_SCALE", "1.0"))
+MAX_SESSION_CHUNKS = int(os.getenv("MAX_SESSION_CHUNKS", "50"))
 HISTORY_MESSAGE_COUNT = 8
 MAX_SHARED_DOCUMENTS = 10
 MAX_FILENAME_CHARS = 255
@@ -38,6 +54,121 @@ MAX_PENDING_FEEDBACK_ITEMS = 50
 MAX_SHARED_MEMORY_ITEMS = 40
 PIN_PATTERN = re.compile(r"[0-9]{6}")
 MAX_NOTIFICATIONS = 20
+
+class CircuitBreakerOpen(Exception):
+    pass
+
+class SimpleCircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=30):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failures = 0
+        self.last_failure_time = 0
+
+    def __call__(self, func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            now = time.time()
+            if self.failures >= self.failure_threshold:
+                if now - self.last_failure_time < self.recovery_timeout:
+                    logger.warning("Circuit breaker OPEN. Skipping call to %s", func.__name__)
+                    raise CircuitBreakerOpen("Service temporarily unavailable due to repeated failures.")
+                else:
+                    self.failures = 0
+            try:
+                res = func(*args, **kwargs)
+                self.failures = 0
+                return res
+            except Exception as e:
+                self.failures += 1
+                self.last_failure_time = time.time()
+                logger.error("Circuit breaker recorded failure %d/%d in %s: %s", self.failures, self.failure_threshold, func.__name__, e)
+                raise
+        return wrapper
+
+db_circuit_breaker = SimpleCircuitBreaker(failure_threshold=5, recovery_timeout=30)
+api_circuit_breaker = SimpleCircuitBreaker(failure_threshold=3, recovery_timeout=30)
+
+def retry_with_backoff(retries=3, backoff_in_seconds=1):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            x = backoff_in_seconds
+            for attempt in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except requests.RequestException as e:
+                    status = e.response.status_code if e.response is not None else None
+                    if status in (429, 500, 502, 503, 504) or status is None:
+                        if attempt == retries - 1:
+                            raise
+                        sleep_time = x * (2 ** attempt)
+                        logger.warning("Transient error %s calling %s. Retrying in %ds (attempt %d/%d)...", status, func.__name__, sleep_time, attempt + 1, retries)
+                        time.sleep(sleep_time)
+                    else:
+                        raise
+                except Exception:
+                    if attempt == retries - 1:
+                        raise
+                    time.sleep(x)
+        return wrapper
+    return decorator
+
+def check_tesseract() -> bool:
+    if shutil.which("tesseract"):
+        return True
+    try:
+        res = subprocess.run(["tesseract", "--version"], capture_output=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+TESSERACT_AVAILABLE = check_tesseract()
+
+def validate_startup_config() -> list[str]:
+    warnings_list = []
+    if not read_secret("OPENROUTER_API_KEY"):
+        warnings_list.append("OPENROUTER_API_KEY is missing. AI chat answers will be disabled.")
+    cfg = get_supabase_config()
+    if not cfg:
+        warnings_list.append("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing. Shared documents, corrections, and feedback will be unavailable.")
+    pin = read_secret("MEMORY_EDIT_PIN")
+    if not pin or PIN_PATTERN.fullmatch(pin) is None:
+        warnings_list.append("MEMORY_EDIT_PIN is missing or not 6 digits. Admin edits require a valid 6-digit PIN.")
+    if not TESSERACT_AVAILABLE:
+        warnings_list.append("Tesseract OCR is not detected on the server. Scanned PDFs cannot be fully extracted.")
+    return warnings_list
+
+def run_health_check() -> dict[str, str]:
+    status = {}
+    api_key = read_secret("OPENROUTER_API_KEY")
+    if api_key:
+        try:
+            resp = requests.get(f"{OPENROUTER_BASE_URL}/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
+            if resp.status_code == 200:
+                status["OpenRouter API"] = "Healthy"
+            else:
+                status["OpenRouter API"] = f"Degraded (HTTP {resp.status_code})"
+        except Exception as e:
+            status["OpenRouter API"] = f"Unreachable ({e})"
+    else:
+        status["OpenRouter API"] = "Not configured (Missing API Key)"
+
+    cfg = get_supabase_config()
+    if cfg:
+        try:
+            resp = requests.get(f"{cfg.url}/rest/v1/assistant_documents?select=document_id&limit=1", headers=supabase_headers(cfg.service_role_key), timeout=5)
+            if resp.status_code in (200, 401, 403):
+                status["Supabase Database"] = "Healthy" if resp.status_code == 200 else "Degraded (Auth/RLS check needed)"
+            else:
+                status["Supabase Database"] = f"Degraded (HTTP {resp.status_code})"
+        except Exception as e:
+            status["Supabase Database"] = f"Unreachable ({e})"
+    else:
+        status["Supabase Database"] = "Not configured (Standalone mode)"
+
+    status["Tesseract OCR"] = "Available" if TESSERACT_AVAILABLE else "Missing (scanned pages cannot be extracted)"
+    return status
 SHARED_FEEDBACK_THEMES = (
     (
         "simpler, plain-language explanations",
@@ -625,76 +756,82 @@ def delete_shared_document(config: SupabaseConfig, document_id: str) -> None:
 def extract_text(uploaded_file: UploadedDocument) -> str:
     content = uploaded_file.getvalue()
     if uploaded_file.name.lower().endswith(".pdf"):
-        reader = PdfReader(io.BytesIO(content))
+        try:
+            reader = PdfReader(io.BytesIO(content))
+        except PdfReadError as error:
+            raise ValueError(f"{uploaded_file.name} could not be read as a PDF.") from error
+
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise ValueError(f"{uploaded_file.name} exceeds the maximum allowed page limit of {MAX_PDF_PAGES}.")
+
         page_texts = [page.extract_text() or "" for page in reader.pages]
         if any(not text.strip() for text in page_texts):
-            try:
-                pdf_document = pdfium.PdfDocument(content)
-            except pdfium.PdfiumError as error:
+            if not TESSERACT_AVAILABLE:
                 raise ValueError(
-                    f"{uploaded_file.name} could not be opened for OCR."
-                ) from error
+                    "OCR is unavailable because Tesseract is not installed on the server."
+                )
+            else:
+                try:
+                    pdf_document = pdfium.PdfDocument(content)
+                except pdfium.PdfiumError as error:
+                    raise ValueError(
+                        f"{uploaded_file.name} could not be opened for OCR."
+                    ) from error
 
-            try:
-                for page_index, page_text in enumerate(page_texts):
-                    if page_text.strip():
-                        continue
-                    page = pdf_document[page_index]
-                    try:
-                        bitmap = page.render(scale=1.5, grayscale=True)
+                try:
+                    for page_index, page_text in enumerate(page_texts):
+                        if page_text.strip():
+                            continue
+                        if page_index >= len(pdf_document):
+                            raise ValueError(
+                                f"Could not render page {page_index + 1} of {uploaded_file.name} for OCR."
+                            )
+                        page = pdf_document[page_index]
                         try:
-                            image = bitmap.to_pil()
+                            bitmap = page.render(scale=OCR_SCALE, grayscale=True)
                             try:
-                                with io.BytesIO() as image_buffer:
-                                    image.save(image_buffer, format="PNG")
-                                    try:
-                                        result = subprocess.run(
-                                            [
-                                                "tesseract",
-                                                "stdin",
-                                                "stdout",
-                                                "-l",
-                                                "eng",
-                                            ],
-                                            input=image_buffer.getvalue(),
-                                            capture_output=True,
-                                            timeout=60,
-                                            check=False,
+                                image = bitmap.to_pil()
+                                try:
+                                    with io.BytesIO() as image_buffer:
+                                        image.save(image_buffer, format="PNG")
+                                        try:
+                                            result = subprocess.run(
+                                                [
+                                                    "tesseract",
+                                                    "stdin",
+                                                    "stdout",
+                                                    "-l",
+                                                    "eng",
+                                                ],
+                                                input=image_buffer.getvalue(),
+                                                capture_output=True,
+                                                timeout=60,
+                                                check=False,
+                                            )
+                                        except (subprocess.SubprocessError, OSError) as error:
+                                            raise ValueError(
+                                                f"OCR failed on page {page_index + 1} of {uploaded_file.name}."
+                                            ) from error
+                                    if result.returncode != 0:
+                                        raise ValueError(
+                                            f"OCR failed on page {page_index + 1} of {uploaded_file.name}: "
+                                            f"{result.stderr.decode('utf-8', errors='replace').strip()}"
                                         )
-                                    except FileNotFoundError as error:
-                                        raise ValueError(
-                                            "OCR is unavailable because Tesseract "
-                                            "is not installed on the server."
-                                        ) from error
-                                    except subprocess.TimeoutExpired as error:
-                                        raise ValueError(
-                                            f"OCR timed out on page "
-                                            f"{page_index + 1} of {uploaded_file.name}."
-                                        ) from error
-                                if result.returncode != 0:
-                                    error_message = result.stderr.decode(
+                                    page_texts[page_index] = result.stdout.decode(
                                         "utf-8", errors="replace"
-                                    ).strip()
-                                    raise ValueError(
-                                        f"OCR failed on page {page_index + 1} of "
-                                        f"{uploaded_file.name}: {error_message}"
                                     )
-                                page_texts[page_index] = result.stdout.decode(
-                                    "utf-8", errors="replace"
-                                )
+                                finally:
+                                    image.close()
                             finally:
-                                image.close()
+                                bitmap.close()
+                        except pdfium.PdfiumError as error:
+                            raise ValueError(
+                                f"Could not render page {page_index + 1} of {uploaded_file.name} for OCR."
+                            ) from error
                         finally:
-                            bitmap.close()
-                    except pdfium.PdfiumError as error:
-                        raise ValueError(
-                            f"Could not render page {page_index + 1} of "
-                            f"{uploaded_file.name} for OCR."
-                        ) from error
-                    finally:
-                        page.close()
-            finally:
-                pdf_document.close()
+                            page.close()
+                finally:
+                    pdf_document.close()
         return "\n".join(page_texts)
     return content.decode("utf-8", errors="replace")
 
@@ -918,24 +1055,36 @@ def answer_question(
         *api_history,
         {"role": "user", "content": current_input},
     ]
-    if quick_response and not explaining_previous:
-        response = client.responses.create(
-            model=MODEL,
-            instructions=instructions,
-            input=request_input,
-            max_output_tokens=500,
-            reasoning={"effort": "none"},
-            store=False,
-        )
-    else:
-        response = client.responses.create(
-            model=MODEL,
-            instructions=instructions,
-            input=request_input,
-            max_output_tokens=1800,
-            store=False,
-        )
-    return response.output_text.strip()
+    models_to_try = [MODEL] + [m for m in FALLBACK_MODELS if m != MODEL]
+    last_error = None
+    for m in models_to_try:
+        try:
+            if quick_response and not explaining_previous:
+                response = client.responses.create(
+                    model=m,
+                    instructions=instructions,
+                    input=request_input,
+                    max_output_tokens=500,
+                    reasoning={"effort": "none"},
+                    store=False,
+                    timeout=30.0,
+                )
+            else:
+                response = client.responses.create(
+                    model=m,
+                    instructions=instructions,
+                    input=request_input,
+                    max_output_tokens=1800,
+                    store=False,
+                    timeout=30.0,
+                )
+            return response.output_text.strip()
+        except OpenAIError as error:
+            logger.warning("Model %s failed: %s. Trying fallback...", m, error)
+            last_error = error
+    if last_error:
+        raise last_error
+    raise OpenAIError("All models failed to return a response.")
 
 
 def render_answer_feedback(
@@ -1375,7 +1524,7 @@ supabase_config = get_supabase_config()
 edit_pin = read_secret("MEMORY_EDIT_PIN")
 shared_documents: list[dict[str, str]] = []
 shared_documents_error: str | None = None
-current_notifications: list[str] = []
+current_notifications: list[str] = validate_startup_config()
 if supabase_config is not None:
     try:
         shared_documents = load_shared_documents(
@@ -1395,15 +1544,19 @@ if supabase_config is not None:
     except ValueError as error:
         shared_documents_error = str(error)
 
-if supabase_config is None:
-    current_notifications.append(
-        "Shared corrections and saved documents are not configured. Add "
-        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets."
-    )
-elif shared_documents_error:
+if shared_documents_error:
     current_notifications.append(
         f"Saved shared documents are unavailable: {shared_documents_error}"
     )
+
+with st.sidebar.expander("🩺 System health & diagnostics", expanded=False):
+    if st.button("Run health check", key="run_health_check_btn"):
+        with st.spinner("Running diagnostics..."):
+            health_status = run_health_check()
+        for k, v in health_status.items():
+            st.write(f"- **{k}**: {v}")
+    else:
+        st.caption("Click to test connectivity to OpenRouter and Supabase.")
 
 with st.sidebar.expander(
     "📚 إدارة ومشاركة المستندات" if response_language == "Arabic" else "📚 Manage shared documents",

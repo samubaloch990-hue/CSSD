@@ -12,6 +12,8 @@ OPENROUTER_API_KEY = "your-api-key"
 
 Never commit the key or paste it into chat. The selected model is currently listed as free, but provider limits and availability can change. Questions, relevant document passages, and aggregate feedback themes may be sent to OpenRouter; raw feedback notes and full chats are not.
 
+The optional `MODEL` and comma-separated `FALLBACK_MODELS` environment variables must contain OpenRouter model IDs ending in `:free`. No fallback model is enabled by default. Use **System health & diagnostics** in the sidebar to check service connectivity.
+
 Conversation history is kept only for the active app session. Answers are concise and simple by default; users can ask for more explanation. Document sources are grouped at the end instead of repeated after individual sentences. The assistant is also instructed to interpret typos, slang, fragments, and speech-to-text mistakes, and to ask for clarification when the intent is unclear. Shared feedback can influence future answers for everyone, but this is prompt-level adaptation, not training the underlying model; no full chats are saved for learning. Saved shared documents are stored as extracted text in Supabase and are available to everyone using the app. Relevant passages may be sent to OpenRouter when answering questions, so do not save sensitive documents.
 
 Use **Dark mode** in the sidebar to switch the app appearance. **Quick upload from phone** adds temporary PDF, TXT, CSV, or Markdown files for questions in the current session; these are not added to the shared library and are cleared when the session ends. Relevant passages from uploaded files may be sent to OpenRouter to answer questions. Ask a follow-up such as “explain more” to get a clearer explanation of the previous answer.
@@ -21,6 +23,7 @@ Use **Dark mode** in the sidebar to switch the app appearance. **Quick upload fr
 Use the single uploader in **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. Scanned English PDFs are read with the free Tesseract OCR engine on the app server; large files may take a few minutes. Each upload can be up to 100 MB. The library supports up to 10 documents and has no app-imposed extracted-text character limit; hosting and database capacity still apply.
 
 Streamlit Community Cloud installs Tesseract from `packages.txt`. For local use, install Tesseract and its English language data separately before uploading scanned PDFs.
+PDF uploads are limited to 100 pages by default; `MAX_PDF_PAGES` can be set on the server to change that limit. OCR failures are reported rather than silently saving incomplete documents.
 
 ## Shared correction memory
 
