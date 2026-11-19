@@ -971,9 +971,18 @@ def retrieve_chunks(
         return []
 
     document_count = len(chunks)
-    ranked_chunks: list[tuple[float, DocumentChunk]] = []
+    ranked_chunks: list[tuple[bool, float, DocumentChunk]] = []
 
     for (source, text), frequencies in zip(chunks, term_frequencies):
+        file_name = source.removeprefix("Shared: ").rsplit(".", 1)[0]
+        filename_terms = {
+            term for term in TOKEN_PATTERN.findall(file_name.lower())
+            if len(term) >= 3 and term not in {
+                "and", "checklist", "document", "file", "for", "from",
+                "guide", "manual", "set", "the", "with",
+            }
+        }
+        filename_match = len(query_terms & filename_terms) >= 2
         document_length = sum(frequencies.values())
         score = 0.0
         for term in query_terms:
@@ -994,11 +1003,13 @@ def retrieve_chunks(
                 * 2.5
                 / (frequency + length_normalization)
             )
-        if score > 0:
-            ranked_chunks.append((score, DocumentChunk(source=source, text=text)))
+        if score > 0 or filename_match:
+            ranked_chunks.append(
+                (filename_match, score, DocumentChunk(source=source, text=text))
+            )
 
-    ranked_chunks.sort(key=lambda item: item[0], reverse=True)
-    return [chunk for _, chunk in ranked_chunks[:RETRIEVAL_COUNT]]
+    ranked_chunks.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [chunk for _, _, chunk in ranked_chunks[:RETRIEVAL_COUNT]]
 
 
 def answer_question(

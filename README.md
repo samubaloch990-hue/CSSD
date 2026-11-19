@@ -22,6 +22,8 @@ Use **Dark mode** in the sidebar to switch the app appearance. **Quick upload fr
 
 Use the single uploader in **Manage shared documents** in the app sidebar to save reference documents for future conversations. People with the configured PIN can add, replace, or remove documents; everyone can ask questions about saved documents. Uploading a file with the same name replaces its saved version. The app stores extracted text, not the original file. Scanned English PDFs are read with the free Tesseract OCR engine on the app server; large files may take a few minutes. Each upload can be up to 100 MB. The library supports up to 10 documents and has no app-imposed extracted-text character limit; hosting and database capacity still apply.
 
+When a question matches multiple distinctive words in a saved file's name, passages from that file are prioritized even if those words do not appear in its extracted text. OCR accuracy depends on the scan; if the saved text is incomplete, replace the document with a clearer copy.
+
 Streamlit Community Cloud installs Tesseract from `packages.txt`. For local use, install Tesseract and its English language data separately before uploading scanned PDFs.
 PDF uploads are limited to 100 pages by default; `MAX_PDF_PAGES` can be set on the server to change that limit. OCR failures are reported rather than silently saving incomplete documents.
 
